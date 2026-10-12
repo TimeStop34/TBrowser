@@ -235,6 +235,25 @@ impl Document {
             .filter_map(move |id| arena.get(id).map(|n| (id, n.get())))
     }
 
+    #[allow(unused)]
+    pub fn get(&self, id: NodeId) -> Option<&NodeData> {
+        self.arena.get(id).map(|n| n.get())
+    }
+
+    pub fn find_form_field(&self, form_id: NodeId, field_index: usize) -> Option<&FormField> {
+        let node = self.arena.get(form_id)?;
+        if let NodeData::Form { items, .. } = node.get() {
+            return items
+                .iter()
+                .filter_map(|item| match item {
+                    FormItem::Field(f) => Some(f),
+                    _ => None,
+                })
+                .nth(field_index);
+        }
+        None
+    }
+
     pub fn variables(&self) -> Option<&HashMap<String, String>> {
         match self.meta.get("variables") {
             Some(MetaValue::Map(m)) => Some(m),

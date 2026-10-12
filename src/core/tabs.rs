@@ -6,7 +6,6 @@ use tokio::sync::RwLock;
 use crate::core::content::Content;
 use crate::core::document::Document;
 use crate::core::history::LocalHistory;
-
 use crate::core::renderer::RenderState;
 
 #[allow(unused)]
@@ -61,6 +60,10 @@ impl TabManager {
 
     pub fn active_mut(&mut self) -> Option<&mut Tab> {
         self.tabs.get_mut(self.active)
+    }
+
+    pub fn get(&self, index: usize) -> Option<&Tab> {
+        self.tabs.get(index)
     }
 
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Tab> {

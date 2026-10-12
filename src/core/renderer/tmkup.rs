@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::Result;
 use async_trait::async_trait;
 use indextree::NodeId;
@@ -335,12 +333,9 @@ fn render_node(
                 None,
             );
 
-            let total = frame.len();
             for (i, line) in frame.into_iter().enumerate() {
                 if i == 1 {
                     out.push(line, LineMeta::spoiler(id, expanded));
-                } else if i == 0 || i == total - 1 {
-                    out.push_normal(line);
                 } else {
                     out.push_normal(line);
                 }
@@ -365,25 +360,19 @@ fn render_node(
 
 fn render_form(form_id: NodeId, items: &[FormItem], out: &mut Out, state: &RenderState) {
     let mut content: Vec<Vec<Span>> = Vec::new();
-    let mut metas: Vec<Option<(usize, InteractiveFieldKind)>> = Vec::new();
+    let mut metas: Vec<LineMeta> = Vec::new();
     let mut field_index = 0usize;
 
     for item in items {
         match item {
             FormItem::Line(spans) => {
                 content.push(spans.clone());
-                metas.push(None);
+                metas.push(LineMeta::normal());
             }
             FormItem::Field(field) => {
-                let (field_lines, kind) = field_to_lines(field, state, form_id, field_index);
-                for (i, line) in field_lines.into_iter().enumerate() {
-                    content.push(line);
-                    if i == 0 {
-                        metas.push(kind.map(|k| (field_index, k)));
-                    } else {
-                        metas.push(None);
-                    }
-                }
+                let (lines, line_metas) = field_to_lines(field, state, form_id, field_index);
+                content.extend(lines);
+                metas.extend(line_metas);
                 field_index += 1;
             }
         }
@@ -405,12 +394,10 @@ fn render_form(form_id: NodeId, items: &[FormItem], out: &mut Out, state: &Rende
             out.push_normal(line);
         } else {
             let content_idx = i - 1;
-            let meta = match metas.get(content_idx).copied().flatten() {
-                Some((field_index, kind)) => {
-                    LineMeta::form_field(form_id, field_index, kind)
-                }
-                None => LineMeta::normal(),
-            };
+            let meta = metas
+                .get(content_idx)
+                .cloned()
+                .unwrap_or_else(LineMeta::normal);
             out.push(line, meta);
         }
     }
@@ -605,7 +592,7 @@ fn field_to_lines(
     state: &RenderState,
     form_id: NodeId,
     field_index: usize,
-) -> (Vec<Vec<Span>>, Option<InteractiveFieldKind>) {
+) -> (Vec<Vec<Span>>, Vec<LineMeta>) {
     let key = (form_id, field_index);
 
     match field {
@@ -656,11 +643,14 @@ fn field_to_lines(
             ))];
 
             let ifk = match kind {
-                FieldKind::Email => Some(InteractiveFieldKind::Email),
-                FieldKind::Password => Some(InteractiveFieldKind::Password),
-                FieldKind::Text => Some(InteractiveFieldKind::Text),
+                FieldKind::Email => InteractiveFieldKind::Email,
+                FieldKind::Password => InteractiveFieldKind::Password,
+                FieldKind::Text => InteractiveFieldKind::Text,
             };
-            (vec![line], ifk)
+            (
+                vec![line],
+                vec![LineMeta::form_text(form_id, field_index, ifk)],
+            )
         }
         FormField::Textarea {
             label,
@@ -686,7 +676,14 @@ fn field_to_lines(
                 req.trim_end(),
                 display
             ))];
-            (vec![line], Some(InteractiveFieldKind::Textarea))
+            (
+                vec![line],
+                vec![LineMeta::form_text(
+                    form_id,
+                    field_index,
+                    InteractiveFieldKind::Textarea,
+                )],
+            )
         }
         FormField::Checkbox {
             label,
@@ -695,39 +692,74 @@ fn field_to_lines(
             ..
         } => {
             let req = if *required { " *" } else { "" };
-            let mark = if *checked { "[x]" } else { "[ ]" };
+            let display_checked = match state.fields.get(&key) {
+                Some(FieldValue::Checked(b)) => *b,
+                _ => *checked,
+            };
+            let mark = if display_checked { "[x]" } else { "[ ]" };
             (
                 vec![vec![Span::raw(format!(
                     "  {} {}{}",
                     mark, label, req
                 ))]],
-                None,
+                vec![LineMeta::form_checkbox(form_id, field_index)],
             )
         }
-        FormField::Radio { options, .. } => (
-            options
-                .iter()
-                .map(|opt| {
-                    let mark = if opt.checked { "(x)" } else { "( )" };
-                    vec![Span::raw(format!("  {} {}", mark, opt.label))]
-                })
-                .collect(),
-            None,
-        ),
+        FormField::Radio { options, .. } => {
+            let selected_idx = match state.fields.get(&key) {
+                Some(FieldValue::Index(i)) => *i,
+                _ => options.iter().position(|o| o.checked).unwrap_or(0),
+            };
+            let mut lines = Vec::new();
+            let mut metas = Vec::new();
+            for (i, opt) in options.iter().enumerate() {
+                let mark = if i == selected_idx { "(x)" } else { "( )" };
+                lines.push(vec![Span::raw(format!("  {} {}", mark, opt.label))]);
+                metas.push(LineMeta::form_radio_option(form_id, field_index, i));
+            }
+            (lines, metas)
+        }
         FormField::Select { options, .. } => {
+            let selected_idx = match state.fields.get(&key) {
+                Some(FieldValue::Index(i)) => *i,
+                _ => options.iter().position(|o| o.selected).unwrap_or(0),
+            };
             let selected = options
-                .iter()
-                .find(|o| o.selected)
+                .get(selected_idx)
                 .map(|o| o.label.clone())
                 .unwrap_or_default();
-            (
-                vec![vec![Span::raw(format!("  [ {} ▼ ]", selected))]],
-                None,
-            )
+
+            let is_open = state.select_open.contains(&key);
+
+            if is_open {
+                let mut lines =
+                    vec![vec![Span::raw(format!("  [ {} ▲ ]", selected))]];
+                let mut metas = vec![LineMeta::form_select_header(form_id, field_index)];
+                for (i, opt) in options.iter().enumerate() {
+                    let marker = if i == selected_idx { ">" } else { " " };
+                    lines.push(vec![Span::raw(format!(
+                        "    {} {}",
+                        marker, opt.label
+                    ))]);
+                    metas.push(LineMeta::form_select_option(form_id, field_index, i));
+                }
+                (lines, metas)
+            } else {
+                (
+                    vec![vec![Span::raw(format!("  [ {} ▼ ]", selected))]],
+                    vec![LineMeta::form_select_collapsed(form_id, field_index)],
+                )
+            }
         }
-        FormField::Submit { label } => (vec![vec![Span::raw(format!("  [ {} ]", label))]], None),
-        FormField::Reset { label } => (vec![vec![Span::raw(format!("  [ {} ]", label))]], None),
-        FormField::Hidden { .. } => (vec![], None),
+        FormField::Submit { label } => (
+            vec![vec![Span::raw(format!("  [ {} ]", label))]],
+            vec![LineMeta::normal()],
+        ),
+        FormField::Reset { label } => (
+            vec![vec![Span::raw(format!("  [ {} ]", label))]],
+            vec![LineMeta::normal()],
+        ),
+        FormField::Hidden { .. } => (vec![], vec![]),
     }
 }
 

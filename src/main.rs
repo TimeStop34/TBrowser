@@ -19,12 +19,10 @@ mod ui;
 use core::bookmarks::Bookmarks;
 use core::info::build_info_text;
 use core::parser::get_parser;
-use core::renderer::{
-    get_renderer, NoTheme, RendererTheme, RenderedContent, RenderState,
-};
+use core::renderer::{get_renderer, NoTheme, RendererTheme, RenderedContent, RenderState};
 use core::{
-    build_error_page, Config, Document, FieldValue, InteractiveFieldKind, LineKind, Tab,
-    TabManager,
+    build_error_page, Config, Document, FieldValue, FormField, InteractiveFieldKind, LineKind,
+    Tab, TabManager,
 };
 use guard::TuiGuard;
 use network::base::FetchOptions;
@@ -661,7 +659,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // URL bar inline editing — приоритет над глобальными keybind'ами
                     if url_bar.is_editing() {
                         let handled = url_bar.handle_key(key);
                         if handled {
@@ -1165,79 +1162,199 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         MainFocus::MainSpace => {
                             if key.code == KeyCode::Enter {
                                 let tab_index = tabs.active;
-                                let mut rerender = false;
-                                let mut load_url: Option<String> = None;
-                                let mut open_field: Option<(NodeId, usize, InteractiveFieldKind)> =
-                                    None;
 
-                                if let Some(tab) = tabs.get_mut(tab_index) {
-                                    let sel = tab.content.selected as usize;
-                                    if let Some(meta) = tab.content.meta.get(sel) {
-                                        match meta.kind {
-                                            LineKind::SpoilerHeader { node_id, expanded } => {
-                                                tab.interactive_state
-                                                    .spoilers
-                                                    .insert(node_id, !expanded);
-                                                rerender = true;
-                                            }
-                                            LineKind::FormField {
-                                                form_id,
-                                                field_index,
-                                                kind,
-                                            } => {
-                                                open_field = Some((form_id, field_index, kind));
-                                            }
-                                            LineKind::Normal => {}
-                                        }
-                                        if let Some(link) = meta.links.first() {
-                                            load_url = Some(link.url.clone());
-                                        }
-                                    }
+                                enum Decision {
+                                    Nothing,
+                                    ToggleSpoiler(NodeId, bool),
+                                    ToggleCheckbox(NodeId, usize),
+                                    SetIndex(NodeId, usize, usize),
+                                    OpenSelect(NodeId, usize),
+                                    CloseSelect(NodeId, usize),
+                                    OpenText(NodeId, usize, InteractiveFieldKind),
+                                    LoadUrl(String),
                                 }
 
-                                if rerender {
-                                    if let Some(tab) = tabs.get_mut(tab_index) {
-                                        rerender_tab(tab, theme.as_ref(), viewport_width).await;
-                                    }
-                                    continue;
-                                }
+                                let decision = match tabs.get(tab_index) {
+                                    Some(tab) => {
+                                        let sel = tab.content.selected as usize;
+                                        match tab.content.meta.get(sel) {
+                                            Some(meta) => match meta.kind {
+                                                LineKind::SpoilerHeader {
+                                                    node_id,
+                                                    expanded,
+                                                } => Decision::ToggleSpoiler(node_id, !expanded),
 
-                                if let Some((form_id, field_index, kind)) = open_field {
-                                    let current = tabs
-                                        .active()
-                                        .and_then(|tab| {
-                                            match tab
-                                                .interactive_state
+                                                LineKind::FormText {
+                                                    form_id,
+                                                    field_index,
+                                                    kind,
+                                                } => Decision::OpenText(form_id, field_index, kind),
+
+                                                LineKind::FormCheckbox {
+                                                    form_id,
+                                                    field_index,
+                                                } => Decision::ToggleCheckbox(form_id, field_index),
+
+                                                LineKind::FormRadioOption {
+                                                    form_id,
+                                                    field_index,
+                                                    option_index,
+                                                } => Decision::SetIndex(
+                                                    form_id,
+                                                    field_index,
+                                                    option_index,
+                                                ),
+
+                                                LineKind::FormSelectCollapsed {
+                                                    form_id,
+                                                    field_index,
+                                                } => Decision::OpenSelect(form_id, field_index),
+
+                                                LineKind::FormSelectHeader {
+                                                    form_id,
+                                                    field_index,
+                                                } => Decision::CloseSelect(form_id, field_index),
+
+                                                LineKind::FormSelectOption {
+                                                    form_id,
+                                                    field_index,
+                                                    option_index,
+                                                } => Decision::SetIndex(
+                                                    form_id,
+                                                    field_index,
+                                                    option_index,
+                                                ),
+
+                                                LineKind::Normal => {
+                                                    if let Some(link) = meta.links.first() {
+                                                        Decision::LoadUrl(link.url.clone())
+                                                    } else {
+                                                        Decision::Nothing
+                                                    }
+                                                }
+                                            },
+                                            None => Decision::Nothing,
+                                        }
+                                    }
+                                    None => Decision::Nothing,
+                                };
+
+                                match decision {
+                                    Decision::Nothing => {}
+
+                                    Decision::ToggleSpoiler(id, new_val) => {
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            tab.interactive_state
+                                                .spoilers
+                                                .insert(id, new_val);
+                                        }
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                .await;
+                                        }
+                                        continue;
+                                    }
+
+                                    Decision::ToggleCheckbox(fid, fi) => {
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            let prev = matches!(
+                                                tab.interactive_state.fields.get(&(fid, fi)),
+                                                Some(FieldValue::Checked(true))
+                                            );
+                                            tab.interactive_state.fields.insert(
+                                                (fid, fi),
+                                                FieldValue::Checked(!prev),
+                                            );
+                                        }
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                .await;
+                                        }
+                                        continue;
+                                    }
+
+                                    Decision::SetIndex(fid, fi, idx) => {
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            tab.interactive_state
                                                 .fields
-                                                .get(&(form_id, field_index))
-                                            {
-                                                Some(FieldValue::Text(t)) => Some(t.clone()),
-                                                _ => None,
+                                                .insert((fid, fi), FieldValue::Index(idx));
+                                            // Если это select-опция — закрываем дропдаун
+                                            tab.interactive_state.select_open.remove(&(fid, fi));
+                                        }
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                .await;
+                                        }
+                                        continue;
+                                    }
+
+                                    Decision::OpenSelect(fid, fi) => {
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            tab.interactive_state.select_open.insert((fid, fi));
+                                        }
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                .await;
+                                        }
+                                        continue;
+                                    }
+
+                                    Decision::CloseSelect(fid, fi) => {
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            tab.interactive_state.select_open.remove(&(fid, fi));
+                                        }
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                .await;
+                                        }
+                                        continue;
+                                    }
+
+                                    Decision::OpenText(fid, fi, kind) => {
+                                        let current = tabs
+                                            .active()
+                                            .and_then(|tab| {
+                                                match tab
+                                                    .interactive_state
+                                                    .fields
+                                                    .get(&(fid, fi))
+                                                {
+                                                    Some(FieldValue::Text(t)) => {
+                                                        Some(t.clone())
+                                                    }
+                                                    _ => None,
+                                                }
+                                            })
+                                            .unwrap_or_default();
+
+                                        let (title, is_email) = match kind {
+                                            InteractiveFieldKind::Email => {
+                                                ("Edit Email", true)
                                             }
-                                        })
-                                        .unwrap_or_default();
+                                            InteractiveFieldKind::Password => {
+                                                ("Edit Password", false)
+                                            }
+                                            InteractiveFieldKind::Textarea => {
+                                                ("Edit Text", false)
+                                            }
+                                            _ => ("Edit Text", false),
+                                        };
 
-                                    let (title, is_email) = match kind {
-                                        InteractiveFieldKind::Email => ("Edit Email", true),
-                                        InteractiveFieldKind::Password => ("Edit Password", false),
-                                        InteractiveFieldKind::Textarea => ("Edit Text", false),
-                                        InteractiveFieldKind::Text => ("Edit Text", false),
-                                    };
+                                        dialog.open(current, title, is_email);
+                                        pending_field = Some((fid, fi));
+                                        continue;
+                                    }
 
-                                    dialog.open(current, title, is_email);
-                                    pending_field = Some((form_id, field_index));
-                                    continue;
-                                }
-
-                                if let Some(url) = load_url {
-                                    let _ = action_tx
-                                        .send(Action::LoadUrl {
-                                            tab_index,
-                                            url,
-                                            mode: NavigateMode::Push,
-                                        })
-                                        .await;
-                                    continue;
+                                    Decision::LoadUrl(url) => {
+                                        let _ = action_tx
+                                            .send(Action::LoadUrl {
+                                                tab_index,
+                                                url,
+                                                mode: NavigateMode::Push,
+                                            })
+                                            .await;
+                                        continue;
+                                    }
                                 }
                             }
 
