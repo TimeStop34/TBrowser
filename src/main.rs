@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use indextree::NodeId;
 use tokio::sync::{mpsc, RwLock};
 use url::Url;
 
@@ -19,8 +19,13 @@ mod ui;
 use core::bookmarks::Bookmarks;
 use core::info::build_info_text;
 use core::parser::get_parser;
-use core::renderer::{get_renderer, NoTheme, RendererTheme, RenderedContent};
-use core::{build_error_page, Config, Document, LineKind, Tab, TabManager};
+use core::renderer::{
+    get_renderer, NoTheme, RendererTheme, RenderedContent, RenderState,
+};
+use core::{
+    build_error_page, Config, Document, FieldValue, InteractiveFieldKind, LineKind, Tab,
+    TabManager,
+};
 use guard::TuiGuard;
 use network::base::FetchOptions;
 use network::factory::get_protocol;
@@ -164,7 +169,7 @@ async fn load_url(
     action_tx: mpsc::Sender<Action>,
     generation: u64,
 ) -> anyhow::Result<(Document, RenderedContent)> {
-    let empty_state: HashMap<indextree::NodeId, bool> = HashMap::new();
+    let empty_state = RenderState::default();
 
     if let Some(doc) = build_special_page(url) {
         let renderer = get_renderer(&doc.content_type);
@@ -343,6 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sidebar_open = false;
     let mut pending_delete_tab: Option<usize> = None;
     let mut pending_delete_bookmark: Option<usize> = None;
+    let mut pending_field: Option<(NodeId, usize)> = None;
 
     if !config.homepage.is_empty() {
         if let Some(tab) = tabs.active_mut() {
@@ -377,7 +383,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Sync url_bar editing with focus
         if main_focus == MainFocus::UrlBar {
             if !url_bar.is_editing() {
                 let current = tabs
@@ -629,10 +634,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if dialog.is_open {
                         dialog.handle_key(key);
-                        if let Some(value) = dialog.take_submission() {
+                        let submission = dialog.take_submission();
+                        let still_open = dialog.is_open;
+
+                        if let Some(value) = submission {
                             if let Some((k, kind)) = pending_edit.take() {
                                 settings_view.apply_edit(&k, &value, kind);
+                            } else if let Some((form_id, field_index)) = pending_field.take() {
+                                let tab_index = tabs.active;
+                                if let Some(tab) = tabs.get_mut(tab_index) {
+                                    tab.interactive_state
+                                        .fields
+                                        .insert((form_id, field_index), FieldValue::Text(value));
+                                }
+                                if let Some(tab) = tabs.get_mut(tab_index) {
+                                    rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                                }
                             }
+                            continue;
+                        }
+
+                        if !still_open {
+                            pending_edit = None;
+                            pending_field = None;
                         }
                         continue;
                     }
@@ -1143,13 +1167,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let tab_index = tabs.active;
                                 let mut rerender = false;
                                 let mut load_url: Option<String> = None;
+                                let mut open_field: Option<(NodeId, usize, InteractiveFieldKind)> =
+                                    None;
 
                                 if let Some(tab) = tabs.get_mut(tab_index) {
                                     let sel = tab.content.selected as usize;
                                     if let Some(meta) = tab.content.meta.get(sel) {
-                                        if let LineKind::SpoilerHeader { node_id, expanded } = meta.kind {
-                                            tab.interactive_state.insert(node_id, !expanded);
-                                            rerender = true;
+                                        match meta.kind {
+                                            LineKind::SpoilerHeader { node_id, expanded } => {
+                                                tab.interactive_state
+                                                    .spoilers
+                                                    .insert(node_id, !expanded);
+                                                rerender = true;
+                                            }
+                                            LineKind::FormField {
+                                                form_id,
+                                                field_index,
+                                                kind,
+                                            } => {
+                                                open_field = Some((form_id, field_index, kind));
+                                            }
+                                            LineKind::Normal => {}
                                         }
                                         if let Some(link) = meta.links.first() {
                                             load_url = Some(link.url.clone());
@@ -1161,6 +1199,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if let Some(tab) = tabs.get_mut(tab_index) {
                                         rerender_tab(tab, theme.as_ref(), viewport_width).await;
                                     }
+                                    continue;
+                                }
+
+                                if let Some((form_id, field_index, kind)) = open_field {
+                                    let current = tabs
+                                        .active()
+                                        .and_then(|tab| {
+                                            match tab
+                                                .interactive_state
+                                                .fields
+                                                .get(&(form_id, field_index))
+                                            {
+                                                Some(FieldValue::Text(t)) => Some(t.clone()),
+                                                _ => None,
+                                            }
+                                        })
+                                        .unwrap_or_default();
+
+                                    let (title, is_email) = match kind {
+                                        InteractiveFieldKind::Email => ("Edit Email", true),
+                                        InteractiveFieldKind::Password => ("Edit Password", false),
+                                        InteractiveFieldKind::Textarea => ("Edit Text", false),
+                                        InteractiveFieldKind::Text => ("Edit Text", false),
+                                    };
+
+                                    dialog.open(current, title, is_email);
+                                    pending_field = Some((form_id, field_index));
                                     continue;
                                 }
 
@@ -1338,7 +1403,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 tab.name = title;
                             }
                             tab.document = Some(document);
-                            tab.interactive_state.clear();
+                            tab.interactive_state = RenderState::default();
                             tab.content.set_rendered(rendered);
                             tab.rendered_width = loaded_width;
                         }
@@ -1354,13 +1419,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tab.url = url.clone();
                             let doc = build_error_page(&url, &error);
                             let renderer = get_renderer(&doc.content_type);
-                            let empty: HashMap<indextree::NodeId, bool> = HashMap::new();
+                            let empty = RenderState::default();
                             let rendered = renderer
                                 .render(&doc, &url, theme.as_ref(), viewport_width, &empty)
                                 .await
                                 .unwrap_or_else(|_| RenderedContent::empty());
                             tab.document = Some(Arc::new(RwLock::new(doc)));
-                            tab.interactive_state.clear();
+                            tab.interactive_state = RenderState::default();
                             tab.content.set_rendered(rendered);
                             tab.rendered_width = viewport_width;
                         }

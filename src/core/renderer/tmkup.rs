@@ -15,7 +15,9 @@ use crate::core::document::{
 };
 use crate::core::renderer::base::Renderer;
 use crate::core::renderer::code::get_code_renderer;
-use crate::core::renderer::meta::{LineMeta, Link, RenderedContent};
+use crate::core::renderer::meta::{
+    FieldValue, InteractiveFieldKind, LineMeta, Link, RenderState, RenderedContent,
+};
 use crate::core::renderer::theme::RendererTheme;
 
 pub struct TmkupRenderer;
@@ -61,7 +63,7 @@ impl Renderer for TmkupRenderer {
         base_url: &str,
         _theme: &dyn RendererTheme,
         viewport_width: u16,
-        state: &HashMap<NodeId, bool>,
+        state: &RenderState,
     ) -> Result<RenderedContent> {
         let mut out = Out::new();
         render_children(doc, doc.root(), &mut out, viewport_width, state, base_url);
@@ -98,7 +100,7 @@ fn render_children(
     parent: NodeId,
     out: &mut Out,
     vw: u16,
-    state: &HashMap<NodeId, bool>,
+    state: &RenderState,
     base_url: &str,
 ) {
     for (id, node) in doc.children(parent) {
@@ -112,7 +114,7 @@ fn render_node(
     node: &NodeData,
     out: &mut Out,
     vw: u16,
-    state: &HashMap<NodeId, bool>,
+    state: &RenderState,
     base_url: &str,
 ) {
     match node {
@@ -306,7 +308,7 @@ fn render_node(
         }
 
         NodeData::Spoiler { title } => {
-            let expanded = state.get(&id).copied().unwrap_or(false);
+            let expanded = state.spoilers.get(&id).copied().unwrap_or(false);
             let t = title.as_deref().unwrap_or("Спойлер");
             let marker = if expanded { "▼" } else { "▶" };
             let header = format!("[{}] {}", marker, t);
@@ -323,7 +325,6 @@ fn render_node(
                 }
             }
 
-            // label = "SPOILER" (константа), рамка/текст белые, метка — чёрный на белом
             let frame = build_frame(
                 "SPOILER",
                 &content,
@@ -334,11 +335,12 @@ fn render_node(
                 None,
             );
 
-            // frame = [top, content_1..N, bottom]
-            // content_1 (индекс 1) — это строка с [▶]/[▼] Title — она интерактивна.
+            let total = frame.len();
             for (i, line) in frame.into_iter().enumerate() {
                 if i == 1 {
                     out.push(line, LineMeta::spoiler(id, expanded));
+                } else if i == 0 || i == total - 1 {
+                    out.push_normal(line);
                 } else {
                     out.push_normal(line);
                 }
@@ -354,30 +356,63 @@ fn render_node(
         }
 
         NodeData::Form { items, .. } => {
-            let mut content: Vec<Vec<Span>> = Vec::new();
-            for item in items {
-                match item {
-                    FormItem::Line(spans) => content.push(spans.clone()),
-                    FormItem::Field(field) => {
-                        for line in field_to_lines(field) {
-                            content.push(line);
-                        }
-                    }
-                }
-            }
-            let frame = build_frame(
-                " FORM ",
-                &content,
-                Color::White,
-                Color::White,
-                Color::Black,
-                FrameBorder::Rounded,
-                None,
-            );
-            out.extend_normal(frame);
+            render_form(id, items, out, state);
         }
 
         NodeData::GopherBlock { .. } => {}
+    }
+}
+
+fn render_form(form_id: NodeId, items: &[FormItem], out: &mut Out, state: &RenderState) {
+    let mut content: Vec<Vec<Span>> = Vec::new();
+    let mut metas: Vec<Option<(usize, InteractiveFieldKind)>> = Vec::new();
+    let mut field_index = 0usize;
+
+    for item in items {
+        match item {
+            FormItem::Line(spans) => {
+                content.push(spans.clone());
+                metas.push(None);
+            }
+            FormItem::Field(field) => {
+                let (field_lines, kind) = field_to_lines(field, state, form_id, field_index);
+                for (i, line) in field_lines.into_iter().enumerate() {
+                    content.push(line);
+                    if i == 0 {
+                        metas.push(kind.map(|k| (field_index, k)));
+                    } else {
+                        metas.push(None);
+                    }
+                }
+                field_index += 1;
+            }
+        }
+    }
+
+    let frame = build_frame(
+        " FORM ",
+        &content,
+        Color::White,
+        Color::White,
+        Color::Black,
+        FrameBorder::Rounded,
+        None,
+    );
+
+    let total = frame.len();
+    for (i, line) in frame.into_iter().enumerate() {
+        if i == 0 || i == total - 1 {
+            out.push_normal(line);
+        } else {
+            let content_idx = i - 1;
+            let meta = match metas.get(content_idx).copied().flatten() {
+                Some((field_index, kind)) => {
+                    LineMeta::form_field(form_id, field_index, kind)
+                }
+                None => LineMeta::normal(),
+            };
+            out.push(line, meta);
+        }
     }
 }
 
@@ -565,7 +600,14 @@ fn render_table(
     out.push_normal(Line::from(make_border('╚', '╩', '╝', '═')));
 }
 
-fn field_to_lines(field: &FormField) -> Vec<Vec<Span>> {
+fn field_to_lines(
+    field: &FormField,
+    state: &RenderState,
+    form_id: NodeId,
+    field_index: usize,
+) -> (Vec<Vec<Span>>, Option<InteractiveFieldKind>) {
+    let key = (form_id, field_index);
+
     match field {
         FormField::Text {
             label,
@@ -576,22 +618,49 @@ fn field_to_lines(field: &FormField) -> Vec<Vec<Span>> {
             ..
         } => {
             let req = if *required { " *" } else { "" };
-            let display = if !value.is_empty() {
-                match kind {
-                    FieldKind::Password => "*".repeat(value.chars().count()),
-                    _ => value.clone(),
+
+            let display = match state.fields.get(&key) {
+                Some(FieldValue::Text(t)) => {
+                    if t.is_empty() {
+                        if !placeholder.is_empty() {
+                            placeholder.clone()
+                        } else {
+                            "____".to_string()
+                        }
+                    } else {
+                        match kind {
+                            FieldKind::Password => "*".repeat(t.chars().count()),
+                            _ => t.clone(),
+                        }
+                    }
                 }
-            } else if !placeholder.is_empty() {
-                placeholder.clone()
-            } else {
-                "____".to_string()
+                _ => {
+                    if !value.is_empty() {
+                        match kind {
+                            FieldKind::Password => "*".repeat(value.chars().count()),
+                            _ => value.clone(),
+                        }
+                    } else if !placeholder.is_empty() {
+                        placeholder.clone()
+                    } else {
+                        "____".to_string()
+                    }
+                }
             };
-            vec![vec![Span::raw(format!(
+
+            let line = vec![Span::raw(format!(
                 "  {}: {} {}",
                 label,
                 display,
                 req.trim_end()
-            ))]]
+            ))];
+
+            let ifk = match kind {
+                FieldKind::Email => Some(InteractiveFieldKind::Email),
+                FieldKind::Password => Some(InteractiveFieldKind::Password),
+                FieldKind::Text => Some(InteractiveFieldKind::Text),
+            };
+            (vec![line], ifk)
         }
         FormField::Textarea {
             label,
@@ -601,17 +670,23 @@ fn field_to_lines(field: &FormField) -> Vec<Vec<Span>> {
             ..
         } => {
             let req = if *required { " *" } else { "" };
-            let display = if value.is_empty() {
-                placeholder.clone()
-            } else {
-                value.clone()
+            let display = match state.fields.get(&key) {
+                Some(FieldValue::Text(t)) if !t.is_empty() => t.clone(),
+                _ => {
+                    if value.is_empty() {
+                        placeholder.clone()
+                    } else {
+                        value.clone()
+                    }
+                }
             };
-            vec![vec![Span::raw(format!(
+            let line = vec![Span::raw(format!(
                 "  {}:{} {}",
                 label,
                 req.trim_end(),
                 display
-            ))]]
+            ))];
+            (vec![line], Some(InteractiveFieldKind::Textarea))
         }
         FormField::Checkbox {
             label,
@@ -621,29 +696,38 @@ fn field_to_lines(field: &FormField) -> Vec<Vec<Span>> {
         } => {
             let req = if *required { " *" } else { "" };
             let mark = if *checked { "[x]" } else { "[ ]" };
-            vec![vec![Span::raw(format!(
-                "  {} {}{}",
-                mark, label, req
-            ))]]
+            (
+                vec![vec![Span::raw(format!(
+                    "  {} {}{}",
+                    mark, label, req
+                ))]],
+                None,
+            )
         }
-        FormField::Radio { options, .. } => options
-            .iter()
-            .map(|opt| {
-                let mark = if opt.checked { "(x)" } else { "( )" };
-                vec![Span::raw(format!("  {} {}", mark, opt.label))]
-            })
-            .collect(),
+        FormField::Radio { options, .. } => (
+            options
+                .iter()
+                .map(|opt| {
+                    let mark = if opt.checked { "(x)" } else { "( )" };
+                    vec![Span::raw(format!("  {} {}", mark, opt.label))]
+                })
+                .collect(),
+            None,
+        ),
         FormField::Select { options, .. } => {
             let selected = options
                 .iter()
                 .find(|o| o.selected)
                 .map(|o| o.label.clone())
                 .unwrap_or_default();
-            vec![vec![Span::raw(format!("  [ {} ▼ ]", selected))]]
+            (
+                vec![vec![Span::raw(format!("  [ {} ▼ ]", selected))]],
+                None,
+            )
         }
-        FormField::Submit { label } => vec![vec![Span::raw(format!("  [ {} ]", label))]],
-        FormField::Reset { label } => vec![vec![Span::raw(format!("  [ {} ]", label))]],
-        FormField::Hidden { .. } => vec![],
+        FormField::Submit { label } => (vec![vec![Span::raw(format!("  [ {} ]", label))]], None),
+        FormField::Reset { label } => (vec![vec![Span::raw(format!("  [ {} ]", label))]], None),
+        FormField::Hidden { .. } => (vec![], None),
     }
 }
 

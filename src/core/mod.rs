@@ -32,10 +32,13 @@ pub use history::LocalHistory;
 pub use info::build_info_text;
 
 #[allow(unused)]
+pub use renderer::{
+    FieldValue, InteractiveFieldKind, LineKind, LineMeta, Link, RenderState, RenderedContent,
+    Renderer, RendererTheme,
+};
+
+#[allow(unused)]
 pub use settings::{ItemDef, NodeDef, ParamDef, ParamKind, Settings, Value, CATEGORIES};
 
 #[allow(unused)]
 pub use tabs::{Tab, TabManager};
-
-#[allow(unused)]
-pub use renderer::{InteractiveState, LineKind, LineMeta, Link, RenderedContent};

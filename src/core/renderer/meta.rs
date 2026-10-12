@@ -9,10 +9,33 @@ pub struct Link {
     pub tooltip: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub enum FieldValue {
+    Text(String),
+    Checked(bool),
+    Index(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractiveFieldKind {
+    Text,
+    Email,
+    Password,
+    Textarea,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     Normal,
-    SpoilerHeader { node_id: NodeId, expanded: bool },
+    SpoilerHeader {
+        node_id: NodeId,
+        expanded: bool,
+    },
+    FormField {
+        form_id: NodeId,
+        field_index: usize,
+        kind: InteractiveFieldKind,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +65,17 @@ impl LineMeta {
             links: Vec::new(),
         }
     }
+
+    pub fn form_field(form_id: NodeId, field_index: usize, kind: InteractiveFieldKind) -> Self {
+        Self {
+            kind: LineKind::FormField {
+                form_id,
+                field_index,
+                kind,
+            },
+            links: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,4 +97,8 @@ impl RenderedContent {
     }
 }
 
-pub type InteractiveState = HashMap<NodeId, bool>;
+#[derive(Debug, Clone, Default)]
+pub struct RenderState {
+    pub spoilers: HashMap<NodeId, bool>,
+    pub fields: HashMap<(NodeId, usize), FieldValue>,
+}
