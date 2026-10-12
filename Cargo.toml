@@ -1,0 +1,16 @@
+[package]
+name = "tbrowser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+url = "2"
+anyhow = "1"
+form_urlencoded = "1"
+async-trait = "0.1.92"
+indextree = "4.9.1"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.6"
