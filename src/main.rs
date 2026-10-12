@@ -373,6 +373,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        // Sync url_bar editing with focus
+        if main_focus == MainFocus::UrlBar {
+            if !url_bar.is_editing() {
+                let current = tabs
+                    .active()
+                    .map(|t| t.url.clone())
+                    .unwrap_or_default();
+                url_bar.start_edit(&current);
+            }
+        } else if url_bar.is_editing() {
+            url_bar.stop_edit();
+        }
+
         let global_theme = GlobalTheme::from_settings(&settings_view.settings);
 
         menu.focus = screen == Screen::Main && matches!(main_focus, MainFocus::Menu);
@@ -416,7 +429,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (total, None, None, None, None)
             };
 
-            // Верхняя строка: gap + border + gap залиты bg header
             if sidebar_is_open {
                 let buf = frame.buffer_mut();
                 let top_y = total.y;
@@ -428,7 +440,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Вертикальная граница ниже верхней строки
             if let Some(border_area) = border_area {
                 let buf = frame.buffer_mut();
                 let vch = global_theme.border.set.vertical;
@@ -453,9 +464,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         frame.buffer_mut(),
                         active_tab,
                         &active_url,
-                        main_focus_snapshot == MainFocus::UrlBar,
                         &global_theme,
                     );
+                    if let Some((x, y)) = url_bar.cursor_position() {
+                        frame.set_cursor_position((x, y));
+                    }
 
                     main_space.render(content_area, frame.buffer_mut(), &global_theme);
 
@@ -614,19 +627,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(value) = dialog.take_submission() {
                             if let Some((k, kind)) = pending_edit.take() {
                                 settings_view.apply_edit(&k, &value, kind);
-                            } else if screen == Screen::Main {
+                            }
+                        }
+                        continue;
+                    }
+
+                    // URL bar inline editing — приоритет над глобальными keybind'ами
+                    if url_bar.is_editing() {
+                        let handled = url_bar.handle_key(key);
+                        if handled {
+                            if url_bar.take_cancelled() {
+                                main_focus = MainFocus::MainSpace;
+                            }
+                            if let Some(url) = url_bar.take_submission() {
                                 let tab_index = tabs.active;
                                 let _ = action_tx
                                     .send(Action::LoadUrl {
                                         tab_index,
-                                        url: value,
+                                        url,
                                         mode: NavigateMode::NewUrl,
                                     })
                                     .await;
                                 main_focus = MainFocus::MainSpace;
                             }
+                            continue;
                         }
-                        continue;
+                        // Tab, Ctrl+C и т.п. — пропускаем, обработаются ниже
                     }
 
                     if screen == Screen::Settings {
@@ -934,13 +960,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // ===== Фокус-зависимая навигация =====
                     match main_focus {
                         MainFocus::UrlBar => {
-                            if key.code == KeyCode::Enter {
-                                let current = tabs
-                                    .active()
-                                    .map(|t| t.url.clone())
-                                    .unwrap_or_default();
-                                dialog.open(current, "Enter URL", false);
-                            }
+                            // Всё уже обработано выше — сюда не попадаем в editing-режиме
                         }
                         MainFocus::SidebarMenu => {
                             let btn_total = sidebar.button_count();
