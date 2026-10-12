@@ -1,19 +1,53 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use async_trait::async_trait;
+use indextree::NodeId;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span as RatSpan, Text},
 };
+use url::Url;
 
 use crate::core::document::{
     Alignment, ColorBorder, Document, FieldKind, FormField, FormItem, InfoKind, ListMarker,
     NodeData, Span,
 };
 use crate::core::renderer::base::Renderer;
-use crate::core::renderer::theme::RendererTheme;
 use crate::core::renderer::code::get_code_renderer;
+use crate::core::renderer::meta::{LineMeta, Link, RenderedContent};
+use crate::core::renderer::theme::RendererTheme;
 
 pub struct TmkupRenderer;
+
+struct Out {
+    lines: Vec<Line<'static>>,
+    meta: Vec<LineMeta>,
+}
+
+impl Out {
+    fn new() -> Self {
+        Self {
+            lines: Vec::new(),
+            meta: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, line: Line<'static>, meta: LineMeta) {
+        self.lines.push(line);
+        self.meta.push(meta);
+    }
+
+    fn push_normal(&mut self, line: Line<'static>) {
+        self.push(line, LineMeta::normal());
+    }
+
+    fn extend_normal(&mut self, lines: Vec<Line<'static>>) {
+        for l in lines {
+            self.push_normal(l);
+        }
+    }
+}
 
 #[async_trait]
 impl Renderer for TmkupRenderer {
@@ -24,42 +58,75 @@ impl Renderer for TmkupRenderer {
     async fn render(
         &self,
         doc: &Document,
-        _base_url: &str,
+        base_url: &str,
         _theme: &dyn RendererTheme,
         viewport_width: u16,
-    ) -> Result<Text<'static>> {
-        let mut lines = Vec::new();
-        render_children(doc, doc.root(), &mut lines, viewport_width);
-        Ok(Text::from(lines))
+        state: &HashMap<NodeId, bool>,
+    ) -> Result<RenderedContent> {
+        let mut out = Out::new();
+        render_children(doc, doc.root(), &mut out, viewport_width, state, base_url);
+        Ok(RenderedContent::new(Text::from(out.lines), out.meta))
     }
+}
+
+fn resolve_href(base_url: &str, href: &str) -> String {
+    if href.is_empty() {
+        return base_url.to_string();
+    }
+    if let Ok(base) = Url::parse(base_url) {
+        if let Ok(joined) = base.join(href) {
+            return joined.to_string();
+        }
+    }
+    href.to_string()
+}
+
+fn collect_links(spans: &[Span], base_url: &str) -> Vec<Link> {
+    spans
+        .iter()
+        .filter_map(|s| {
+            s.link.as_ref().map(|l| Link {
+                url: resolve_href(base_url, &l.url),
+                tooltip: l.tooltip.clone(),
+            })
+        })
+        .collect()
 }
 
 fn render_children(
     doc: &Document,
-    parent: indextree::NodeId,
-    out: &mut Vec<Line<'static>>,
+    parent: NodeId,
+    out: &mut Out,
     vw: u16,
+    state: &HashMap<NodeId, bool>,
+    base_url: &str,
 ) {
     for (id, node) in doc.children(parent) {
-        render_node(doc, id, node, out, vw);
+        render_node(doc, id, node, out, vw, state, base_url);
     }
 }
 
 fn render_node(
     doc: &Document,
-    id: indextree::NodeId,
+    id: NodeId,
     node: &NodeData,
-    out: &mut Vec<Line<'static>>,
+    out: &mut Out,
     vw: u16,
+    state: &HashMap<NodeId, bool>,
+    base_url: &str,
 ) {
     match node {
         NodeData::Root => {}
 
         NodeData::Paragraph(spans) => {
             if spans.is_empty() {
-                out.push(Line::from(""));
+                out.push_normal(Line::from(""));
             } else {
-                out.push(Line::from(spans_to_ratatui(spans)));
+                let links = collect_links(spans, base_url);
+                out.push(
+                    Line::from(spans_to_ratatui(spans)),
+                    LineMeta::with_links(links),
+                );
             }
         }
 
@@ -71,7 +138,7 @@ fn render_node(
                 .iter()
                 .map(|s| RatSpan::styled(sanitize(&s.text), style))
                 .collect();
-            out.push(Line::from(rat));
+            out.push_normal(Line::from(rat));
         }
 
         NodeData::ListItem {
@@ -84,9 +151,10 @@ fn render_node(
                 ListMarker::Ordered(path) => path.clone(),
             };
             let prefix = format!("{}{} ", "  ".repeat(*indent as usize), m);
+            let links = collect_links(spans, base_url);
             let mut rat = vec![RatSpan::raw(prefix)];
             rat.extend(spans_to_ratatui(spans));
-            out.push(Line::from(rat));
+            out.push(Line::from(rat), LineMeta::with_links(links));
         }
 
         NodeData::Definition { term } => {
@@ -95,16 +163,16 @@ fn render_node(
             for s in term {
                 rat.push(RatSpan::styled(sanitize(&s.text), italic));
             }
-            out.push(Line::from(rat));
+            out.push_normal(Line::from(rat));
         }
 
         NodeData::HorizontalRule { thick } => {
             let ch = if *thick { '━' } else { '─' };
             let width = ((vw as usize) * 3 / 4).max(1);
-            out.push(Line::from(ch.to_string().repeat(width)));
+            out.push_normal(Line::from(ch.to_string().repeat(width)));
         }
 
-                NodeData::CodeBlock { language, text } => {
+        NodeData::CodeBlock { language, text } => {
             let lang = language.as_deref().unwrap_or("");
             let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
 
@@ -123,14 +191,8 @@ fn render_node(
                             style: crate::core::document::SpanStyle {
                                 fg: rs.style.fg,
                                 bg: rs.style.bg,
-                                bold: rs
-                                    .style
-                                    .add_modifier
-                                    .contains(Modifier::BOLD),
-                                italic: rs
-                                    .style
-                                    .add_modifier
-                                    .contains(Modifier::ITALIC),
+                                bold: rs.style.add_modifier.contains(Modifier::BOLD),
+                                italic: rs.style.add_modifier.contains(Modifier::ITALIC),
                                 ..Default::default()
                             },
                             link: None,
@@ -148,11 +210,11 @@ fn render_node(
                 FrameBorder::Rounded,
                 None,
             );
-            out.extend(frame);
+            out.extend_normal(frame);
         }
 
         NodeData::Image { alt, .. } => {
-            out.push(Line::from(format!("[{}]", alt)));
+            out.push_normal(Line::from(format!("[{}]", alt)));
         }
 
         NodeData::BlockQuote { cite, date } => {
@@ -192,7 +254,7 @@ fn render_node(
                 FrameBorder::Left,
                 None,
             );
-            out.extend(frame);
+            out.extend_normal(frame);
         }
 
         NodeData::InfoBlock { kind } => {
@@ -217,7 +279,7 @@ fn render_node(
                 FrameBorder::Rounded,
                 Some(color),
             );
-            out.extend(frame);
+            out.extend_normal(frame);
         }
 
         NodeData::ColorBlock { color, border } => {
@@ -240,12 +302,47 @@ fn render_node(
                 border_style,
                 Some(*color),
             );
-            out.extend(frame);
+            out.extend_normal(frame);
         }
 
         NodeData::Spoiler { title } => {
+            let expanded = state.get(&id).copied().unwrap_or(false);
             let t = title.as_deref().unwrap_or("Спойлер");
-            out.push(Line::from(format!("[▶] {}", t)));
+            let marker = if expanded { "▼" } else { "▶" };
+            let header = format!("[{}] {}", marker, t);
+
+            let mut content: Vec<Vec<Span>> = Vec::new();
+            content.push(vec![Span::raw(header)]);
+
+            if expanded {
+                content.push(vec![Span::raw("")]);
+                for (_, child) in doc.children(id) {
+                    if let NodeData::Paragraph(spans) = child {
+                        content.push(spans.clone());
+                    }
+                }
+            }
+
+            // label = "SPOILER" (константа), рамка/текст белые, метка — чёрный на белом
+            let frame = build_frame(
+                "SPOILER",
+                &content,
+                Color::White,
+                Color::White,
+                Color::Black,
+                FrameBorder::Rounded,
+                None,
+            );
+
+            // frame = [top, content_1..N, bottom]
+            // content_1 (индекс 1) — это строка с [▶]/[▼] Title — она интерактивна.
+            for (i, line) in frame.into_iter().enumerate() {
+                if i == 1 {
+                    out.push(line, LineMeta::spoiler(id, expanded));
+                } else {
+                    out.push_normal(line);
+                }
+            }
         }
 
         NodeData::Table {
@@ -277,28 +374,18 @@ fn render_node(
                 FrameBorder::Rounded,
                 None,
             );
-            out.extend(frame);
+            out.extend_normal(frame);
         }
 
-        NodeData::GopherBlock { .. } => {
-            // Парсится, но не рендерится
-        }
+        NodeData::GopherBlock { .. } => {}
     }
 }
-
-// ============================================================
-// Sanitize
-// ============================================================
 
 fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
-
-// ============================================================
-// Frame
-// ============================================================
 
 enum FrameBorder {
     Rounded,
@@ -400,15 +487,11 @@ fn build_frame(
     out
 }
 
-// ============================================================
-// Table
-// ============================================================
-
 fn render_table(
     headers: &[Vec<Span>],
     rows: &[Vec<Vec<Span>>],
     alignments: &[Alignment],
-    out: &mut Vec<Line<'static>>,
+    out: &mut Out,
 ) {
     let header_texts: Vec<String> = headers
         .iter()
@@ -471,20 +554,16 @@ fn render_table(
         format!("│{}│", parts.join("│"))
     };
 
-    out.push(Line::from(make_border('╔', '╦', '╗', '═')));
+    out.push_normal(Line::from(make_border('╔', '╦', '╗', '═')));
     if !header_texts.is_empty() {
-        out.push(Line::from(row_str(&header_texts)));
-        out.push(Line::from(make_border('╠', '╬', '╣', '═')));
+        out.push_normal(Line::from(row_str(&header_texts)));
+        out.push_normal(Line::from(make_border('╠', '╬', '╣', '═')));
     }
     for row in &row_texts {
-        out.push(Line::from(row_str(row)));
+        out.push_normal(Line::from(row_str(row)));
     }
-    out.push(Line::from(make_border('╚', '╩', '╝', '═')));
+    out.push_normal(Line::from(make_border('╚', '╩', '╝', '═')));
 }
-
-// ============================================================
-// Form fields → spans
-// ============================================================
 
 fn field_to_lines(field: &FormField) -> Vec<Vec<Span>> {
     match field {
@@ -562,19 +641,11 @@ fn field_to_lines(field: &FormField) -> Vec<Vec<Span>> {
                 .unwrap_or_default();
             vec![vec![Span::raw(format!("  [ {} ▼ ]", selected))]]
         }
-        FormField::Submit { label } => {
-            vec![vec![Span::raw(format!("  [ {} ]", label))]]
-        }
-        FormField::Reset { label } => {
-            vec![vec![Span::raw(format!("  [ {} ]", label))]]
-        }
+        FormField::Submit { label } => vec![vec![Span::raw(format!("  [ {} ]", label))]],
+        FormField::Reset { label } => vec![vec![Span::raw(format!("  [ {} ]", label))]],
         FormField::Hidden { .. } => vec![],
     }
 }
-
-// ============================================================
-// Spans → ratatui
-// ============================================================
 
 fn spans_to_ratatui(spans: &[Span]) -> Vec<RatSpan<'static>> {
     spans

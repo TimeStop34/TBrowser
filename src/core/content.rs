@@ -1,5 +1,7 @@
 use std::cell::Cell;
 
+use crate::core::renderer::{LineMeta, RenderedContent};
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -12,6 +14,7 @@ const PADDING_H: u16 = 1;
 
 pub struct Content {
     pub text: Text<'static>,
+    pub meta: Vec<LineMeta>,
     pub scroll: u16,
     pub selected: u16,
     pub style: Style,
@@ -22,8 +25,10 @@ pub struct Content {
 
 impl Content {
     pub fn new(text: Text<'static>) -> Self {
+        let meta = vec![LineMeta::normal(); text.lines.len()];
         Self {
             text,
+            meta,
             scroll: 0,
             selected: 0,
             style: Style::default(),
@@ -54,7 +59,14 @@ impl Content {
         self.selected = 0;
     }
 
-        pub fn up(&mut self) -> bool {
+    pub fn set_rendered(&mut self, rendered: RenderedContent) {
+        self.text = rendered.text;
+        self.meta = rendered.meta;
+        self.scroll = 0;
+        self.selected = 0;
+    }
+
+    pub fn up(&mut self) -> bool {
         if self.selected > 0 {
             self.selected -= 1;
             self.ensure_visible();

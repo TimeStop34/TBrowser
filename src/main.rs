@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +9,6 @@ use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout},
     style::Style,
-    text::Text,
 };
 
 mod core;
@@ -19,8 +19,8 @@ mod ui;
 use core::bookmarks::Bookmarks;
 use core::info::build_info_text;
 use core::parser::get_parser;
-use core::renderer::{get_renderer, NoTheme, RendererTheme};
-use core::{build_error_page, Config, Document, Tab, TabManager};
+use core::renderer::{get_renderer, NoTheme, RendererTheme, RenderedContent};
+use core::{build_error_page, Config, Document, LineKind, Tab, TabManager};
 use guard::TuiGuard;
 use network::base::FetchOptions;
 use network::factory::get_protocol;
@@ -53,7 +53,7 @@ enum Action {
         tab_index: usize,
         url: String,
         document: Arc<RwLock<Document>>,
-        text: Text<'static>,
+        rendered: RenderedContent,
         generation: u64,
         viewport_width: u16,
     },
@@ -163,13 +163,15 @@ async fn load_url(
     follow_redirects: bool,
     action_tx: mpsc::Sender<Action>,
     generation: u64,
-) -> anyhow::Result<(Document, Text<'static>)> {
+) -> anyhow::Result<(Document, RenderedContent)> {
+    let empty_state: HashMap<indextree::NodeId, bool> = HashMap::new();
+
     if let Some(doc) = build_special_page(url) {
         let renderer = get_renderer(&doc.content_type);
-        let text = renderer
-            .render(&doc, url, theme.as_ref(), viewport_width)
+        let rendered = renderer
+            .render(&doc, url, theme.as_ref(), viewport_width, &empty_state)
             .await?;
-        return Ok((doc, text));
+        return Ok((doc, rendered));
     }
 
     let _ = action_tx
@@ -225,8 +227,8 @@ async fn load_url(
         .await;
 
     let renderer = get_renderer(&content_type);
-    let text = renderer
-        .render(&doc, url, theme.as_ref(), viewport_width)
+    let rendered = renderer
+        .render(&doc, url, theme.as_ref(), viewport_width, &empty_state)
         .await?;
 
     let _ = action_tx
@@ -239,7 +241,7 @@ async fn load_url(
 
     let _ = generation;
 
-    Ok((doc, text))
+    Ok((doc, rendered))
 }
 
 fn spawn_hint(hint: &mut KeybindHint, text: &str, duration_ms: u64, tx: mpsc::Sender<Action>) {
@@ -258,12 +260,14 @@ async fn rerender_tab(tab: &mut Tab, theme: &dyn RendererTheme, width: u16) {
     let doc = doc_arc.read().await;
     let renderer = get_renderer(&doc.content_type);
     let url = tab.url.clone();
-    let result = renderer.render(&doc, &url, theme, width).await;
+    let state = tab.interactive_state.clone();
+    let result = renderer.render(&doc, &url, theme, width, &state).await;
     drop(doc);
-    if let Ok(text) = result {
+    if let Ok(rendered) = result {
         let saved_scroll = tab.content.scroll;
         let saved_selected = tab.content.selected;
-        tab.content.text = text;
+        tab.content.text = rendered.text;
+        tab.content.meta = rendered.meta;
         let max = tab.content.text.lines.len().saturating_sub(1) as u16;
         tab.content.scroll = saved_scroll.min(max);
         tab.content.selected = saved_selected.min(max);
@@ -392,20 +396,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings_menu.focus =
             screen == Screen::Settings && settings_focus == SettingsFocus::Menu;
 
-        let info_text: Text<'static> = if sidebar_open && sidebar.mode == SidebarMode::Info {
-            if let Some(tab) = tabs.active() {
-                if let Some(arc) = tab.document.clone() {
-                    let doc = arc.read().await;
-                    build_info_text(&tab.url, Some(&doc))
+        let info_text: ratatui::text::Text<'static> =
+            if sidebar_open && sidebar.mode == SidebarMode::Info {
+                if let Some(tab) = tabs.active() {
+                    if let Some(arc) = tab.document.clone() {
+                        let doc = arc.read().await;
+                        build_info_text(&tab.url, Some(&doc))
+                    } else {
+                        build_info_text(&tab.url, None)
+                    }
                 } else {
-                    build_info_text(&tab.url, None)
+                    ratatui::text::Text::default()
                 }
             } else {
-                Text::default()
-            }
-        } else {
-            Text::default()
-        };
+                ratatui::text::Text::default()
+            };
 
         let active_tab = tabs.active;
         let active_url = tabs.active().map(|t| t.url.clone()).unwrap_or_default();
@@ -652,7 +657,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             continue;
                         }
-                        // Tab, Ctrl+C и т.п. — пропускаем, обработаются ниже
                     }
 
                     if screen == Screen::Settings {
@@ -684,7 +688,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // t / m / i — sidebar
                     let sidebar_target: Option<SidebarMode> =
                         if matches_keybind(&key, &config.kb_tabs) {
                             Some(SidebarMode::Tabs)
@@ -759,7 +762,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // n / p — сдвиг favorite или next/prev tab
                     if matches_keybind(&key, &config.kb_next_tab) {
                         let dur = global_theme.keybind_hint_duration_ms;
                         if sidebar_open
@@ -795,7 +797,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // favorite (v)
                     if matches_keybind(&key, &config.kb_favorite) {
                         let dur = global_theme.keybind_hint_duration_ms;
                         spawn_hint(&mut keybind_hint, "Favorite", dur, action_tx.clone());
@@ -820,7 +821,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // Digit shortcuts — открытие favorite по слоту
                     {
                         let mut matched_slot: Option<u8> = None;
                         for (i, kb) in config.kb_favorites.iter().enumerate() {
@@ -852,7 +852,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    // Esc
                     if key.code == KeyCode::Esc && sidebar_open {
                         sidebar_open = false;
                         if main_focus == MainFocus::Sidebar || main_focus == MainFocus::SidebarMenu {
@@ -861,7 +860,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // Tab — циклический фокус
                     if key.code == KeyCode::Tab {
                         main_focus = if sidebar_open {
                             match main_focus {
@@ -880,7 +878,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // c — глобально
                     if matches_keybind(&key, &config.kb_create_tab) {
                         let dur = global_theme.keybind_hint_duration_ms;
                         if sidebar_open
@@ -917,7 +914,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // d — глобально
                     if matches_keybind(&key, &config.kb_delete_tab) {
                         let dur = global_theme.keybind_hint_duration_ms;
                         if sidebar_open
@@ -957,11 +953,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // ===== Фокус-зависимая навигация =====
                     match main_focus {
-                        MainFocus::UrlBar => {
-                            // Всё уже обработано выше — сюда не попадаем в editing-режиме
-                        }
+                        MainFocus::UrlBar => {}
                         MainFocus::SidebarMenu => {
                             let btn_total = sidebar.button_count();
                             match key.code {
@@ -1146,6 +1139,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             _ => {}
                         },
                         MainFocus::MainSpace => {
+                            if key.code == KeyCode::Enter {
+                                let tab_index = tabs.active;
+                                let mut rerender = false;
+                                let mut load_url: Option<String> = None;
+
+                                if let Some(tab) = tabs.get_mut(tab_index) {
+                                    let sel = tab.content.selected as usize;
+                                    if let Some(meta) = tab.content.meta.get(sel) {
+                                        if let LineKind::SpoilerHeader { node_id, expanded } = meta.kind {
+                                            tab.interactive_state.insert(node_id, !expanded);
+                                            rerender = true;
+                                        }
+                                        if let Some(link) = meta.links.first() {
+                                            load_url = Some(link.url.clone());
+                                        }
+                                    }
+                                }
+
+                                if rerender {
+                                    if let Some(tab) = tabs.get_mut(tab_index) {
+                                        rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                                    }
+                                    continue;
+                                }
+
+                                if let Some(url) = load_url {
+                                    let _ = action_tx
+                                        .send(Action::LoadUrl {
+                                            tab_index,
+                                            url,
+                                            mode: NavigateMode::Push,
+                                        })
+                                        .await;
+                                    continue;
+                                }
+                            }
+
                             if let Some(tab) = tabs.active_mut() {
                                 match key.code {
                                     KeyCode::Up => {
@@ -1262,13 +1292,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )
                             .await
                             {
-                                Ok((doc, text)) => {
+                                Ok((doc, rendered)) => {
                                     let _ = tx
                                         .send(Action::Loaded {
                                             tab_index,
                                             url,
                                             document: Arc::new(RwLock::new(doc)),
-                                            text,
+                                            rendered,
                                             generation,
                                             viewport_width: width,
                                         })
@@ -1291,7 +1321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tab_index,
                         url,
                         document,
-                        text,
+                        rendered,
                         generation,
                         viewport_width: loaded_width,
                     } => {
@@ -1308,7 +1338,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 tab.name = title;
                             }
                             tab.document = Some(document);
-                            tab.content.set_text(text);
+                            tab.interactive_state.clear();
+                            tab.content.set_rendered(rendered);
                             tab.rendered_width = loaded_width;
                         }
                     }
@@ -1323,12 +1354,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tab.url = url.clone();
                             let doc = build_error_page(&url, &error);
                             let renderer = get_renderer(&doc.content_type);
-                            let text = renderer
-                                .render(&doc, &url, theme.as_ref(), viewport_width)
+                            let empty: HashMap<indextree::NodeId, bool> = HashMap::new();
+                            let rendered = renderer
+                                .render(&doc, &url, theme.as_ref(), viewport_width, &empty)
                                 .await
-                                .unwrap_or_default();
+                                .unwrap_or_else(|_| RenderedContent::empty());
                             tab.document = Some(Arc::new(RwLock::new(doc)));
-                            tab.content.set_text(text);
+                            tab.interactive_state.clear();
+                            tab.content.set_rendered(rendered);
                             tab.rendered_width = viewport_width;
                         }
                     }

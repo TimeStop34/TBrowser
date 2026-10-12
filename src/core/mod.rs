@@ -36,3 +36,6 @@ pub use settings::{ItemDef, NodeDef, ParamDef, ParamKind, Settings, Value, CATEG
 
 #[allow(unused)]
 pub use tabs::{Tab, TabManager};
+
+#[allow(unused)]
+pub use renderer::{InteractiveState, LineKind, LineMeta, Link, RenderedContent};

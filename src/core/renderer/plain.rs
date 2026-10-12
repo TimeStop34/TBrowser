@@ -1,9 +1,12 @@
-use anyhow::Result;
+use std::collections::HashMap;
+
 use async_trait::async_trait;
+use indextree::NodeId;
 use ratatui::text::{Line, Text};
 
 use crate::core::document::{Document, NodeData};
 use crate::core::renderer::base::Renderer;
+use crate::core::renderer::meta::{LineMeta, RenderedContent};
 use crate::core::renderer::theme::RendererTheme;
 
 pub struct PlainRenderer;
@@ -20,14 +23,17 @@ impl Renderer for PlainRenderer {
         _base_url: &str,
         _theme: &dyn RendererTheme,
         _viewport_width: u16,
-    ) -> Result<Text<'static>> {
+        _state: &HashMap<NodeId, bool>,
+    ) -> anyhow::Result<RenderedContent> {
         let mut lines = Vec::new();
+        let mut meta = Vec::new();
         for (_, node) in doc.iter() {
             if let NodeData::Paragraph(spans) = node {
                 let text: String = spans.iter().map(|s| s.text.as_str()).collect();
                 lines.push(Line::from(text));
+                meta.push(LineMeta::normal());
             }
         }
-        Ok(Text::from(lines))
+        Ok(RenderedContent::new(Text::from(lines), meta))
     }
 }

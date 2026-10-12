@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use indextree::NodeId;
 use ratatui::text::Text;
 use tokio::sync::RwLock;
 
@@ -17,6 +19,7 @@ pub struct Tab {
     pub load_generation: u64,
     pub rendered_width: u16,
     pub history: LocalHistory,
+    pub interactive_state: HashMap<NodeId, bool>,
 }
 
 impl Tab {
@@ -30,6 +33,7 @@ impl Tab {
             load_generation: 0,
             rendered_width: 0,
             history: LocalHistory::new(),
+            interactive_state: HashMap::new(),
         }
     }
 }

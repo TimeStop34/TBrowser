@@ -19,3 +19,6 @@ pub use theme::*;
 pub mod code;
 #[allow(unused)]
 pub use code::{CodeRenderResult, CodeRenderer, get_code_renderer};
+
+mod meta;
+pub use meta::*;
