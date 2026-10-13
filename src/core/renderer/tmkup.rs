@@ -454,14 +454,14 @@ fn build_frame(
     };
     let label_len = label_fmt.chars().count();
 
-    let mut width = content_width + 2;
-    if !label.is_empty() && width < label_len + 4 {
-        width = label_len + 4;
-    }
+    // Внутренняя ширина контента = content_width.
+    // Слева и справа по 3 пробела до рамки: total = content_width + 3 + 3 + 2 (границы).
+    // width у нас — "промежуточная" величина для расчёта top/bottom, top = width + 2.
+    let width = content_width + 6;
+    let inner = content_width;
     if width < 4 {
-        width = 4;
+        return Vec::new();
     }
-    let inner = width - 2;
 
     let border_style = Style::default().fg(border_color);
     let mut out = Vec::new();
@@ -484,7 +484,7 @@ fn build_frame(
 
     for spans in content {
         let mut rat: Vec<RatSpan<'static>> = Vec::new();
-        rat.push(RatSpan::styled("│ ".to_string(), border_style));
+        rat.push(RatSpan::styled("│   ".to_string(), border_style));
         let mut used = 0usize;
         for s in spans {
             let mut style = span_style(s);
@@ -499,7 +499,7 @@ fn build_frame(
         if used < inner {
             rat.push(RatSpan::raw(" ".repeat(inner - used)));
         }
-        rat.push(RatSpan::styled(" │".to_string(), border_style));
+        rat.push(RatSpan::styled("   │".to_string(), border_style));
         out.push(Line::from(rat));
     }
 
@@ -645,7 +645,7 @@ fn field_to_lines(
                 }
             };
 
-            let mut spans = vec![Span::raw(format!("  {}: {} ", label, display))];
+            let mut spans = vec![Span::raw(format!("{}: {} ", label, display))];
             if *required {
                 spans.push(required_marker(form_id, field_index, state));
             }
@@ -677,19 +677,41 @@ fn field_to_lines(
                     }
                 }
             };
-            let mut spans = vec![Span::raw(format!("  {}: {}", label, display))];
+
+            let mut content: Vec<Vec<Span>> = Vec::new();
+            let mut metas: Vec<LineMeta> = Vec::new();
+
+            let mut head = vec![Span::raw(format!("{}:", label))];
             if *required {
-                spans.push(Span::raw(" "));
-                spans.push(required_marker(form_id, field_index, state));
+                head.push(Span::raw(" "));
+                head.push(required_marker(form_id, field_index, state));
             }
-            (
-                vec![spans],
-                vec![LineMeta::form_text(
+            content.push(head);
+            metas.push(LineMeta::form_text(
+                form_id,
+                field_index,
+                InteractiveFieldKind::Textarea,
+            ));
+
+            if display.is_empty() {
+                content.push(vec![Span::raw(String::new())]);
+                metas.push(LineMeta::form_text(
                     form_id,
                     field_index,
                     InteractiveFieldKind::Textarea,
-                )],
-            )
+                ));
+            } else {
+                for line in display.split('\n') {
+                    content.push(vec![Span::raw(format!("    {}", line))]);
+                    metas.push(LineMeta::form_text(
+                        form_id,
+                        field_index,
+                        InteractiveFieldKind::Textarea,
+                    ));
+                }
+            }
+
+            (content, metas)
         }
         FormField::Checkbox {
             label,
@@ -702,7 +724,7 @@ fn field_to_lines(
                 _ => *checked,
             };
             let mark = if display_checked { "[x]" } else { "[ ]" };
-            let mut spans = vec![Span::raw(format!("  {} {}", mark, label))];
+            let mut spans = vec![Span::raw(format!("{} {}", mark, label))];
             if *required {
                 spans.push(Span::raw(" "));
                 spans.push(required_marker(form_id, field_index, state));
@@ -721,7 +743,7 @@ fn field_to_lines(
             let mut metas = Vec::new();
             for (i, opt) in options.iter().enumerate() {
                 let mark = if i == selected_idx { "(x)" } else { "( )" };
-                lines.push(vec![Span::raw(format!("  {} {}", mark, opt.label))]);
+                lines.push(vec![Span::raw(format!("{} {}", mark, opt.label))]);
                 metas.push(LineMeta::form_radio_option(form_id, field_index, i));
             }
             (lines, metas)
@@ -740,12 +762,12 @@ fn field_to_lines(
 
             if is_open {
                 let mut lines =
-                    vec![vec![Span::raw(format!("  [ {} ▲ ]", selected))]];
+                    vec![vec![Span::raw(format!("[ {} ▲ ]", selected))]];
                 let mut metas = vec![LineMeta::form_select_header(form_id, field_index)];
                 for (i, opt) in options.iter().enumerate() {
                     let marker = if i == selected_idx { ">" } else { " " };
                     lines.push(vec![Span::raw(format!(
-                        "    {} {}",
+                        "  {} {}",
                         marker, opt.label
                     ))]);
                     metas.push(LineMeta::form_select_option(form_id, field_index, i));
@@ -753,17 +775,17 @@ fn field_to_lines(
                 (lines, metas)
             } else {
                 (
-                    vec![vec![Span::raw(format!("  [ {} ▼ ]", selected))]],
+                    vec![vec![Span::raw(format!("[ {} ▼ ]", selected))]],
                     vec![LineMeta::form_select_collapsed(form_id, field_index)],
                 )
             }
         }
         FormField::Submit { label } => {
-            let mut lines = vec![vec![Span::raw(format!("  [ {} ]", label))]];
+            let mut lines = vec![vec![Span::raw(format!("[ {} ]", label))]];
             let mut metas = vec![LineMeta::form_submit(form_id)];
             if let Some(err) = state.form_errors.get(&form_id) {
                 lines.push(vec![Span {
-                    text: format!("  {}", err),
+                    text: err.clone(),
                     style: SpanStyle {
                         fg: Some(Color::Red),
                         ..Default::default()
@@ -775,7 +797,7 @@ fn field_to_lines(
             (lines, metas)
         }
         FormField::Reset { label } => (
-            vec![vec![Span::raw(format!("  [ {} ]", label))]],
+            vec![vec![Span::raw(format!("[ {} ]", label))]],
             vec![LineMeta::form_reset(form_id)],
         ),
         FormField::Hidden { .. } => (vec![], vec![]),

@@ -241,6 +241,7 @@ impl Document {
         self.arena.get(id).map(|n| n.get())
     }
 
+    #[allow(unused)]
     pub fn find_form_field(&self, form_id: NodeId, field_index: usize) -> Option<&FormField> {
         let node = self.arena.get(form_id)?;
         if let NodeData::Form { items, .. } = node.get() {

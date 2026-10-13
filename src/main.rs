@@ -30,7 +30,7 @@ use network::factory::{get_post_protocol, get_protocol};
 use ui::{
     ButtonCallback, ConfirmDialog, EditKind, GlobalTheme, Header, InputDialog, KeybindDialog,
     KeybindHint, LoadStage, MainFocus, MainSpace, Menu, MenuButton, Scrollbar, SettingsColumn,
-    SettingsView, Sidebar, SidebarMenuButton, SidebarMode, UrlBar,
+    SettingsView, Sidebar, SidebarMenuButton, SidebarMode, TextareaDialog, UrlBar,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,6 +402,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let main_space = MainSpace::new();
     let mut dialog = InputDialog::new();
+    let mut textarea_dialog = TextareaDialog::new();
     let mut keybind_dialog = KeybindDialog::new();
     let mut confirm_dialog = ConfirmDialog::new();
     let mut settings_view = SettingsView::new();
@@ -649,6 +650,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            if textarea_dialog.is_open {
+                let area = textarea_dialog.compute_area(total);
+                textarea_dialog.render(area, frame.buffer_mut(), &global_theme);
+                if let Some((x, y)) = textarea_dialog.cursor_position() {
+                    frame.set_cursor_position((x, y));
+                }
+            }
+
             if keybind_dialog.is_open {
                 let area = keybind_dialog.compute_area(total);
                 keybind_dialog.render(area, frame.buffer_mut(), &global_theme);
@@ -730,6 +739,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         if !still_open {
                             pending_edit = None;
+                            pending_field = None;
+                        }
+                        continue;
+                    }
+                    if textarea_dialog.is_open {
+                        textarea_dialog.handle_key(key);
+                        let submission = textarea_dialog.take_submission();
+                        let still_open = textarea_dialog.is_open;
+
+                        if let Some(value) = submission {
+                            if let Some((form_id, field_index)) = pending_field.take() {
+                                let tab_index = tabs.active;
+                                if let Some(tab) = tabs.get_mut(tab_index) {
+                                    tab.interactive_state
+                                        .fields
+                                        .insert((form_id, field_index), FieldValue::Text(value));
+                                    tab.interactive_state
+                                        .field_errors
+                                        .remove(&(form_id, field_index));
+                                }
+                                if let Some(tab) = tabs.get_mut(tab_index) {
+                                    rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                                }
+                            }
+                            continue;
+                        }
+
+                        if !still_open {
                             pending_field = None;
                         }
                         continue;
@@ -1418,20 +1455,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             })
                                             .unwrap_or_default();
 
-                                        let (title, is_email) = match kind {
-                                            InteractiveFieldKind::Email => {
-                                                ("Edit Email", true)
-                                            }
-                                            InteractiveFieldKind::Password => {
-                                                ("Edit Password", false)
-                                            }
-                                            InteractiveFieldKind::Textarea => {
-                                                ("Edit Text", false)
-                                            }
-                                            _ => ("Edit Text", false),
-                                        };
-
-                                        dialog.open(current, title, is_email);
+                                        if matches!(kind, InteractiveFieldKind::Textarea) {
+                                            textarea_dialog.open(current, "Edit Textarea");
+                                        } else {
+                                            let (title, is_email) = match kind {
+                                                InteractiveFieldKind::Email => {
+                                                    ("Edit Email", true)
+                                                }
+                                                InteractiveFieldKind::Password => {
+                                                    ("Edit Password", false)
+                                                }
+                                                _ => ("Edit Text", false),
+                                            };
+                                            dialog.open(current, title, is_email);
+                                        }
                                         pending_field = Some((fid, fi));
                                         continue;
                                     }
@@ -1448,7 +1485,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
 
                                     Decision::SubmitForm(form_id) => {
-                                        // 1. Прочитать форму
                                         let form_data: Option<(String, Vec<FormItem>)> =
                                             match tabs.get(tab_index) {
                                                 Some(tab) if tab.document.is_some() => {
@@ -1470,7 +1506,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .map(|t| t.interactive_state.clone())
                                             .unwrap_or_default();
 
-                                        // 2. Собрать данные, проверить required
                                         let mut data: Vec<(String, String)> = Vec::new();
                                         let mut errors: Vec<(NodeId, usize)> = Vec::new();
                                         let mut field_index = 0usize;
@@ -1585,7 +1620,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             continue;
                                         }
 
-                                        // 3. Резолв URL
                                         let tab_url = tabs
                                             .get(tab_index)
                                             .map(|t| t.url.clone())
@@ -1617,7 +1651,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             continue;
                                         }
 
-                                        // 4. Обновить состояние вкладки и запустить POST
                                         let generation = match tabs.get_mut(tab_index) {
                                             Some(tab) => {
                                                 tab.interactive_state

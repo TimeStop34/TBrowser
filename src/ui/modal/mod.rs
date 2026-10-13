@@ -10,3 +10,6 @@ pub use confirm::*;
 
 mod keybind;
 pub use keybind::*;
+
+mod textarea;
+pub use textarea::*;
