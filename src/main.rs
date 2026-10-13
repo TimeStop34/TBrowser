@@ -7,8 +7,9 @@ use url::Url;
 
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::Style,
+    text::Text,
 };
 
 mod core;
@@ -21,8 +22,8 @@ use core::info::build_info_text;
 use core::parser::get_parser;
 use core::renderer::{get_renderer, NoTheme, RendererTheme, RenderedContent, RenderState};
 use core::{
-    build_error_page, Config, Document, FieldValue, FormField, FormItem, InteractiveFieldKind,
-    LineKind, Tab, TabManager,
+    build_error_page, Config, Document, FieldKind, FieldValue, FormField, FormItem,
+    InteractiveFieldKind, LineKind, Tab, TabManager,
 };
 use guard::TuiGuard;
 use network::base::FetchOptions;
@@ -84,6 +85,25 @@ enum Screen {
 pub enum SettingsFocus {
     Menu,
     Column,
+}
+
+struct InlineEdit {
+    form_id: NodeId,
+    field_index: usize,
+    value: String,
+    cursor: usize,
+    original: String,
+    label: String,
+    is_password: bool,
+}
+
+fn validate_email(email: &str) -> bool {
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let (local, domain) = (parts[0], parts[1]);
+    !local.is_empty() && !domain.is_empty() && domain.contains('.')
 }
 
 fn make_menu_button(label: &str, tx: mpsc::Sender<Action>, action: Action) -> MenuButton {
@@ -346,6 +366,42 @@ async fn do_form_reset(
     }
 }
 
+fn inline_cursor_xy(
+    text: &Text<'static>,
+    content_area: Rect,
+    scroll: u16,
+    selected: u16,
+    prefix_cols: usize,
+    visible_cursor: usize,
+) -> Option<(u16, u16)> {
+    let w = content_area.width as usize;
+    if w == 0 {
+        return None;
+    }
+
+    let mut y_offset = 0usize;
+    for i in (scroll as usize)..(selected as usize) {
+        if let Some(line) = text.lines.get(i) {
+            let chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            let h = if chars == 0 { 1 } else { (chars + w - 1) / w };
+            y_offset += h;
+        }
+    }
+
+    let line = text.lines.get(selected as usize)?;
+    let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let pos = (prefix_cols + visible_cursor).min(total);
+
+    let vy = y_offset + pos / w;
+    let vx = pos % w;
+
+    if vy >= content_area.height as usize {
+        return None;
+    }
+
+    Some((content_area.x + vx as u16, content_area.y + vy as u16))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_guard, mut terminal) = TuiGuard::new();
@@ -417,6 +473,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pending_delete_bookmark: Option<usize> = None;
     let mut pending_form_reset: Option<(usize, NodeId)> = None;
     let mut pending_field: Option<(NodeId, usize)> = None;
+    let mut inline_edit: Option<InlineEdit> = None;
 
     if !config.homepage.is_empty() {
         if let Some(tab) = tabs.active_mut() {
@@ -489,6 +546,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let active_url = tabs.active().map(|t| t.url.clone()).unwrap_or_default();
         let sidebar_is_open = sidebar_open;
         let main_focus_snapshot = main_focus;
+        let inline_active = inline_edit.is_some();
+
+        let cursor_calc: Option<(usize, String, usize, bool, String)> = inline_edit.as_ref().map(|e| {
+            let cursor_chars = e.value[..e.cursor.min(e.value.len())].chars().count();
+            (
+                e.field_index,
+                e.value.clone(),
+                cursor_chars,
+                e.is_password,
+                e.label.clone(),
+            )
+        });
 
         terminal.draw(|frame| {
             let total = frame.area();
@@ -591,6 +660,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     tab.content.scroll,
                                 );
                                 sb.render(sb_area, frame.buffer_mut(), &global_theme);
+                            }
+
+                            if inline_active {
+                                if let Some((_, ref value, cursor_chars, _is_password, ref label)) =
+                                    cursor_calc
+                                {
+                                    let visible_cursor = cursor_chars;
+                                    let prefix_cols = 6 + label.chars().count();
+                                    let text_area = Rect {
+                                        x: content_inner.x + 1,
+                                        y: content_inner.y,
+                                        width: content_inner.width.saturating_sub(2),
+                                        height: content_inner.height,
+                                    };
+                                    if let Some((cx, cy)) = inline_cursor_xy(
+                                        &tab.content.text,
+                                        text_area,
+                                        tab.content.scroll,
+                                        tab.content.selected,
+                                        prefix_cols,
+                                        visible_cursor,
+                                    ) {
+                                        frame.set_cursor_position((cx, cy));
+                                    }
+                                    let _ = value;
+                                }
                             }
                         }
                     }
@@ -720,26 +815,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(value) = submission {
                             if let Some((k, kind)) = pending_edit.take() {
                                 settings_view.apply_edit(&k, &value, kind);
-                            } else if let Some((form_id, field_index)) = pending_field.take() {
-                                let tab_index = tabs.active;
-                                if let Some(tab) = tabs.get_mut(tab_index) {
-                                    tab.interactive_state
-                                        .fields
-                                        .insert((form_id, field_index), FieldValue::Text(value));
-                                    tab.interactive_state
-                                        .field_errors
-                                        .remove(&(form_id, field_index));
-                                }
-                                if let Some(tab) = tabs.get_mut(tab_index) {
-                                    rerender_tab(tab, theme.as_ref(), viewport_width).await;
-                                }
                             }
                             continue;
                         }
 
                         if !still_open {
                             pending_edit = None;
-                            pending_field = None;
                         }
                         continue;
                     }
@@ -769,6 +850,128 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if !still_open {
                             pending_field = None;
                         }
+                        continue;
+                    }
+
+                    // ===== Inline edit =====
+                    if let Some(mut edit) = inline_edit.take() {
+                        let mut exit_apply = false;
+                        let mut exit_cancel = false;
+                        let mut exit_after_apply_with_move: Option<i32> = None;
+
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                running = false;
+                                continue;
+                            }
+                            (KeyCode::Esc, _) => {
+                                exit_cancel = true;
+                            }
+                            (KeyCode::Enter, _) | (KeyCode::Tab, _) => {
+                                exit_apply = true;
+                            }
+                            (KeyCode::Up, _) => {
+                                exit_apply = true;
+                                exit_after_apply_with_move = Some(-1);
+                            }
+                            (KeyCode::Down, _) => {
+                                exit_apply = true;
+                                exit_after_apply_with_move = Some(1);
+                            }
+                            (KeyCode::Left, _) => {
+                                if edit.cursor > 0 {
+                                    let prev = edit.value[..edit.cursor].chars().last().unwrap();
+                                    edit.cursor -= prev.len_utf8();
+                                }
+                            }
+                            (KeyCode::Right, _) => {
+                                if edit.cursor < edit.value.len() {
+                                    let next = edit.value[edit.cursor..].chars().next().unwrap();
+                                    edit.cursor += next.len_utf8();
+                                }
+                            }
+                            (KeyCode::Home, _) => {
+                                edit.cursor = 0;
+                            }
+                            (KeyCode::End, _) => {
+                                edit.cursor = edit.value.len();
+                            }
+                            (KeyCode::Backspace, _) => {
+                                if edit.cursor > 0 {
+                                    let prev = edit.value[..edit.cursor].chars().last().unwrap();
+                                    let new_pos = edit.cursor - prev.len_utf8();
+                                    edit.value.replace_range(new_pos..edit.cursor, "");
+                                    edit.cursor = new_pos;
+                                }
+                            }
+                            (KeyCode::Delete, _) => {
+                                if edit.cursor < edit.value.len() {
+                                    let next = edit.value[edit.cursor..].chars().next().unwrap();
+                                    edit.value.replace_range(
+                                        edit.cursor..edit.cursor + next.len_utf8(),
+                                        "",
+                                    );
+                                }
+                            }
+                            (KeyCode::Char(c), KeyModifiers::NONE)
+                            | (KeyCode::Char(c), KeyModifiers::SHIFT) => {
+                                if !c.is_control() {
+                                    edit.value.insert(edit.cursor, c);
+                                    edit.cursor += c.len_utf8();
+                                }
+                            }
+                            _ => {}
+                        }
+
+                        let tab_index = tabs.active;
+                        let key = (edit.form_id, edit.field_index);
+
+                        if exit_cancel {
+                            if let Some(tab) = tabs.get_mut(tab_index) {
+                                tab.interactive_state
+                                    .fields
+                                    .insert(key, FieldValue::Text(edit.original.clone()));
+                            }
+                            if let Some(tab) = tabs.get_mut(tab_index) {
+                                rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                            }
+                            inline_edit = None;
+                            continue;
+                        }
+
+                        // Обновляем state текущим значением
+                        if let Some(tab) = tabs.get_mut(tab_index) {
+                            tab.interactive_state
+                                .fields
+                                .insert(key, FieldValue::Text(edit.value.clone()));
+                            tab.interactive_state.field_errors.remove(&key);
+                        }
+
+                        if exit_apply {
+                            if let Some(tab) = tabs.get_mut(tab_index) {
+                                rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                            }
+                            inline_edit = None;
+
+                            if let Some(delta) = exit_after_apply_with_move {
+                                if let Some(tab) = tabs.active_mut() {
+                                    if delta < 0 {
+                                        tab.content.up();
+                                    } else {
+                                        if !tab.content.down() {
+                                            main_focus = MainFocus::Menu;
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Продолжаем редактировать — перерендерить и вернуть в state
+                        if let Some(tab) = tabs.get_mut(tab_index) {
+                            rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                        }
+                        inline_edit = Some(edit);
                         continue;
                     }
 
@@ -1284,6 +1487,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     OpenSelect(NodeId, usize),
                                     CloseSelect(NodeId, usize),
                                     OpenText(NodeId, usize, InteractiveFieldKind),
+                                    OpenTextarea(NodeId, usize, InteractiveFieldKind),
                                     LoadUrl(String),
                                     SubmitForm(NodeId),
                                     ResetForm(NodeId),
@@ -1303,7 +1507,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     form_id,
                                                     field_index,
                                                     kind,
-                                                } => Decision::OpenText(form_id, field_index, kind),
+                                                } => {
+                                                    if matches!(kind, InteractiveFieldKind::Textarea) {
+                                                        Decision::OpenTextarea(form_id, field_index, kind)
+                                                    } else {
+                                                        Decision::OpenText(form_id, field_index, kind)
+                                                    }
+                                                }
 
                                                 LineKind::FormCheckbox {
                                                     form_id,
@@ -1439,6 +1649,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
 
                                     Decision::OpenText(fid, fi, kind) => {
+                                        let info: Option<(String, String, bool)> = {
+                                            match tabs.get(tab_index) {
+                                                Some(tab) if tab.document.is_some() => {
+                                                    let arc = tab.document.clone().unwrap();
+                                                    let guard = arc.read().await;
+                                                    match guard.find_form_field(fid, fi) {
+                                                        Some(FormField::Text {
+                                                            label,
+                                                            value,
+                                                            kind,
+                                                            ..
+                                                        }) => {
+                                                            let is_pw = matches!(
+                                                                kind,
+                                                                core::document::FieldKind::Password
+                                                            );
+                                                            Some((
+                                                                label.clone(),
+                                                                value.clone(),
+                                                                is_pw,
+                                                            ))
+                                                        }
+                                                        _ => None,
+                                                    }
+                                                }
+                                                _ => None,
+                                            }
+                                        };
+
+                                        let Some((label, default_value, is_password)) = info else {
+                                            continue;
+                                        };
+
+                                        let current = tabs
+                                            .active()
+                                            .and_then(|tab| {
+                                                match tab
+                                                    .interactive_state
+                                                    .fields
+                                                    .get(&(fid, fi))
+                                                {
+                                                    Some(FieldValue::Text(t)) => {
+                                                        Some(t.clone())
+                                                    }
+                                                    _ => None,
+                                                }
+                                            })
+                                            .unwrap_or_else(|| default_value.clone());
+
+                                        inline_edit = Some(InlineEdit {
+                                            form_id: fid,
+                                            field_index: fi,
+                                            value: current.clone(),
+                                            cursor: current.len(),
+                                            original: current.clone(),
+                                            label,
+                                            is_password,
+                                        });
+                                        let _ = kind;
+                                        continue;
+                                    }
+
+                                    Decision::OpenTextarea(fid, fi, _kind) => {
                                         let current = tabs
                                             .active()
                                             .and_then(|tab| {
@@ -1454,21 +1727,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 }
                                             })
                                             .unwrap_or_default();
-
-                                        if matches!(kind, InteractiveFieldKind::Textarea) {
-                                            textarea_dialog.open(current, "Edit Textarea");
-                                        } else {
-                                            let (title, is_email) = match kind {
-                                                InteractiveFieldKind::Email => {
-                                                    ("Edit Email", true)
-                                                }
-                                                InteractiveFieldKind::Password => {
-                                                    ("Edit Password", false)
-                                                }
-                                                _ => ("Edit Text", false),
-                                            };
-                                            dialog.open(current, title, is_email);
-                                        }
+                                        textarea_dialog.open(current, "Edit Textarea");
                                         pending_field = Some((fid, fi));
                                         continue;
                                     }
@@ -1520,9 +1779,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         name,
                                                         required,
                                                         value,
+                                                        kind,
                                                         ..
+                                                    } => {
+                                                        let text = match val {
+                                                            Some(FieldValue::Text(t)) => t.clone(),
+                                                            _ => value.clone(),
+                                                        };
+                                                        if *required && text.trim().is_empty() {
+                                                            errors.push(key);
+                                                        } else if matches!(
+                                                            kind,
+                                                            FieldKind::Email
+                                                        ) && !text.trim().is_empty()
+                                                            && !validate_email(text.trim())
+                                                        {
+                                                            errors.push(key);
+                                                        }
+                                                        if !name.is_empty() {
+                                                            data.push((name.clone(), text));
+                                                        }
                                                     }
-                                                    | FormField::Textarea {
+                                                    FormField::Textarea {
                                                         name,
                                                         required,
                                                         value,
@@ -1885,6 +2163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         url_bar.hide(generation);
                     }
                     Action::LoadUrl { tab_index, url, mode } => {
+                        inline_edit = None;
                         let generation = match tabs.get_mut(tab_index) {
                             Some(tab) => {
                                 tab.load_generation = tab.load_generation.wrapping_add(1);

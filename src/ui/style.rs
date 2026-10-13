@@ -221,12 +221,6 @@ impl GlobalTheme {
             "theme.scrollbar_color",
             accent,
         );
-        let keybind_hint_fg = resolve_color_type(
-            s,
-            "theme.keybind_hint_fg_type",
-            "theme.keybind_hint_fg",
-            accent,
-        );
         let keybind_hint_bg = resolve_color_type(
             s,
             "theme.keybind_hint_bg_type",
@@ -242,7 +236,7 @@ impl GlobalTheme {
             selected_tab_color,
             url_bar_color,
             scrollbar_color,
-            keybind_hint_fg,
+            keybind_hint_fg: Color::Black,
             keybind_hint_bg,
             keybind_hint_format,
             keybind_hint_duration_ms,

@@ -67,15 +67,6 @@ static P_KEYBIND_HINT_BG_TYPE: ParamDef = ParamDef {
     default: DefaultValue::EnumIndex(0),
 };
 
-static P_KEYBIND_HINT_FG_TYPE: ParamDef = ParamDef {
-    key: "theme.keybind_hint_fg_type",
-    label: "Keybind hint fg type",
-    description: "Foreground color type for the keybind hint overlay",
-    kind: ParamKind::Enum(&["White", "Accent", "Custom"]),
-    active: always_active,
-    default: DefaultValue::EnumIndex(0),
-};
-
 const ACCENTS_CHILDREN: &[ItemDef] = &[
     ItemDef::Param(&P_BORDERS_FG),
     ItemDef::Param(&P_SELECTED_BTN_BG),
@@ -83,7 +74,6 @@ const ACCENTS_CHILDREN: &[ItemDef] = &[
     ItemDef::Param(&P_URL_BAR_FG),
     ItemDef::Param(&P_SCROLLBAR_FG),
     ItemDef::Param(&P_SELECTION_BG),
-    ItemDef::Param(&P_KEYBIND_HINT_FG_TYPE),
     ItemDef::Param(&P_KEYBIND_HINT_BG_TYPE),
 ];
 

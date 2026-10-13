@@ -454,9 +454,6 @@ fn build_frame(
     };
     let label_len = label_fmt.chars().count();
 
-    // Внутренняя ширина контента = content_width.
-    // Слева и справа по 3 пробела до рамки: total = content_width + 3 + 3 + 2 (границы).
-    // width у нас — "промежуточная" величина для расчёта top/bottom, top = width + 2.
     let width = content_width + 6;
     let inner = content_width;
     if width < 4 {
@@ -645,9 +642,29 @@ fn field_to_lines(
                 }
             };
 
-            let mut spans = vec![Span::raw(format!("{}: {} ", label, display))];
-            if *required {
-                spans.push(required_marker(form_id, field_index, state));
+            let has_err = state.field_errors.contains(&key);
+
+            let mut spans: Vec<Span> = Vec::new();
+            if matches!(kind, FieldKind::Email) && has_err {
+                spans.push(Span::raw(format!("{}: ", label)));
+                spans.push(Span {
+                    text: display,
+                    style: SpanStyle {
+                        reversed: true,
+                        ..Default::default()
+                    },
+                    link: None,
+                });
+                if *required {
+                    spans.push(Span::raw(" "));
+                    spans.push(required_marker(form_id, field_index, state));
+                }
+                spans.push(Span::raw(" (Needs to be an email)"));
+            } else {
+                spans.push(Span::raw(format!("{}: {} ", label, display)));
+                if *required {
+                    spans.push(required_marker(form_id, field_index, state));
+                }
             }
 
             let ifk = match kind {
