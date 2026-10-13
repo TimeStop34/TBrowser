@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use indextree::NodeId;
-use ratatui::text::Text;
+use ratatui::text::{Line, Text};
 
 #[derive(Debug, Clone)]
 pub struct Link {
@@ -22,6 +22,13 @@ pub enum InteractiveFieldKind {
     Email,
     Password,
     Textarea,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImageState {
+    Loading,
+    Ready(Vec<Line<'static>>),
+    Failed(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,4 +205,5 @@ pub struct RenderState {
     pub select_open: HashSet<(NodeId, usize)>,
     pub field_errors: HashSet<(NodeId, usize)>,
     pub form_errors: HashMap<NodeId, String>,
+    pub images: HashMap<NodeId, ImageState>,
 }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use image::GenericImageView;
 use indextree::NodeId;
 use tokio::sync::{mpsc, RwLock};
 use url::Url;
@@ -8,8 +9,8 @@ use url::Url;
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout, Rect},
-    style::Style,
-    text::Text,
+    style::{Color, Style},
+    text::{Line, Span as RatSpan, Text},
 };
 
 mod core;
@@ -20,10 +21,12 @@ mod ui;
 use core::bookmarks::Bookmarks;
 use core::info::build_info_text;
 use core::parser::get_parser;
-use core::renderer::{get_renderer, NoTheme, RendererTheme, RenderedContent, RenderState};
+use core::renderer::{
+    get_renderer, ImageState, NoTheme, RendererTheme, RenderedContent, RenderState,
+};
 use core::{
     build_error_page, Config, Document, FieldKind, FieldValue, FormField, FormItem,
-    InteractiveFieldKind, LineKind, Tab, TabManager,
+    InteractiveFieldKind, LineKind, NodeData, Tab, TabManager,
 };
 use guard::TuiGuard;
 use network::base::FetchOptions;
@@ -71,6 +74,12 @@ enum Action {
         tab_index: usize,
         form_id: NodeId,
         message: String,
+        generation: u64,
+    },
+    ImageLoaded {
+        tab_index: usize,
+        node_id: NodeId,
+        result: Result<Vec<Line<'static>>, String>,
         generation: u64,
     },
 }
@@ -183,6 +192,125 @@ fn build_special_page(url: &str) -> Option<Document> {
     }
 }
 
+fn resolve_image_url(base_url: &str, src: &str) -> String {
+    if src.contains("://") {
+        return src.to_string();
+    }
+    if let Ok(base) = Url::parse(base_url) {
+        if base.scheme() == "tmutp" {
+            let host = base.host_str().unwrap_or("localhost");
+            let new_path = if src.starts_with('/') {
+                src.to_string()
+            } else {
+                let dir = base
+                    .path()
+                    .rsplit_once('/')
+                    .map(|(d, _)| d)
+                    .unwrap_or("");
+                format!("{}/{}", dir, src)
+            };
+            return format!("tbip://{}{}", host, new_path);
+        }
+        if let Ok(joined) = base.join(src) {
+            return joined.to_string();
+        }
+    }
+    src.to_string()
+}
+
+async fn load_image_ascii(
+    base_url: &str,
+    src: &str,
+    height_attr: Option<u16>,
+    viewport_height: u16,
+    timeout_secs: u64,
+) -> Result<Vec<Line<'static>>, String> {
+    let full_url = resolve_image_url(base_url, src);
+
+    let parsed = Url::parse(&full_url).map_err(|e| e.to_string())?;
+    let scheme = parsed.scheme();
+
+    let client = get_protocol(scheme).ok_or_else(|| format!("unsupported scheme: {}", scheme))?;
+
+    let options = FetchOptions {
+        follow_redirects: true,
+        max_redirects: 10,
+    };
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(timeout_secs.max(1)),
+        client.fetch(&full_url, None, &options),
+    )
+    .await
+    .map_err(|_| format!("timed out after {}s", timeout_secs))?
+    .map_err(|e| e.to_string())?;
+
+    let img = image::load_from_memory(&response.body).map_err(|e| e.to_string())?;
+    let (src_w, src_h) = img.dimensions();
+    if src_w == 0 || src_h == 0 {
+        return Err("empty image".to_string());
+    }
+
+    let target_height_chars: u32 = match height_attr {
+        Some(h) if h > 0 => h as u32,
+        _ => {
+            let h = viewport_height.saturating_sub(6);
+            let h = if h > 15 { h - 5 } else { h };
+            h.max(5) as u32
+        }
+    };
+
+    let target_h = target_height_chars.saturating_mul(2).max(2);
+    let aspect = src_w as f64 / src_h as f64;
+    let target_w = ((target_h as f64) * aspect).round() as u32;
+    let target_w = target_w.max(1);
+
+    let resized = img.resize_exact(target_w, target_h, image::imageops::FilterType::Lanczos3);
+    let rgb = resized.to_rgb8();
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(target_height_chars as usize);
+
+    let mut i = 0u32;
+    while i < target_h {
+        let mut spans: Vec<RatSpan<'static>> = Vec::new();
+        let mut x = 0u32;
+        while x < target_w {
+            let top = rgb.get_pixel(x, i);
+            let bot = if i + 1 < target_h {
+                rgb.get_pixel(x, i + 1)
+            } else {
+                top
+            };
+
+            let mut run = 1u32;
+            while x + run < target_w {
+                let t2 = rgb.get_pixel(x + run, i);
+                let b2 = if i + 1 < target_h {
+                    rgb.get_pixel(x + run, i + 1)
+                } else {
+                    t2
+                };
+                if t2 == top && b2 == bot {
+                    run += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let style = Style::default()
+                .fg(Color::Rgb(top[0], top[1], top[2]))
+                .bg(Color::Rgb(bot[0], bot[1], bot[2]));
+            let text: String = std::iter::repeat('▀').take(run as usize).collect();
+            spans.push(RatSpan::styled(text, style));
+            x += run;
+        }
+        lines.push(Line::from(spans));
+        i += 2;
+    }
+
+    Ok(lines)
+}
+
 async fn load_url(
     url: &str,
     tab_index: usize,
@@ -259,14 +387,6 @@ async fn load_url(
     let rendered = renderer
         .render(&doc, url, theme.as_ref(), viewport_width, &empty_state)
         .await?;
-
-    let _ = action_tx
-        .send(Action::LoadStage {
-            tab_index,
-            url: url.to_string(),
-            stage: LoadStage::Done,
-        })
-        .await;
 
     let _ = generation;
 
@@ -405,7 +525,9 @@ fn inline_cursor_xy(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_guard, mut terminal) = TuiGuard::new();
-    let mut viewport_width: u16 = terminal.size()?.width;
+    let size = terminal.size()?;
+    let mut viewport_width: u16 = size.width;
+    let mut viewport_height: u16 = size.height;
 
     let (event_tx, mut event_rx) = mpsc::channel::<Event>(64);
     let (action_tx, mut action_rx) = mpsc::channel::<Action>(64);
@@ -766,10 +888,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         tokio::select! {
             Some(ev) = event_rx.recv() => {
-                if let Event::Resize(cols, _rows) = ev {
+                if let Event::Resize(cols, rows) = ev {
                     viewport_width = cols;
+                    viewport_height = rows;
                 } else if let Event::Key(key) = ev {
-                    // ===== Модалки =====
                     if keybind_dialog.is_open {
                         keybind_dialog.handle_key(key);
                         if let Some(bind) = keybind_dialog.take_submission() {
@@ -853,7 +975,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // ===== Inline edit =====
                     if let Some(mut edit) = inline_edit.take() {
                         let mut exit_apply = false;
                         let mut exit_cancel = false;
@@ -939,7 +1060,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             continue;
                         }
 
-                        // Обновляем state текущим значением
                         if let Some(tab) = tabs.get_mut(tab_index) {
                             tab.interactive_state
                                 .fields
@@ -967,7 +1087,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             continue;
                         }
 
-                        // Продолжаем редактировать — перерендерить и вернуть в state
                         if let Some(tab) = tabs.get_mut(tab_index) {
                             rerender_tab(tab, theme.as_ref(), viewport_width).await;
                         }
@@ -1010,8 +1129,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .await;
                         continue;
                     }
-
-                    // ===== Screen::Main =====
 
                     if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1476,6 +1593,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             _ => {}
                         },
                         MainFocus::MainSpace => {
+                            if matches_keybind(&key, &config.kb_open_new_tab) {
+                                let tab_index = tabs.active;
+                                let url_opt = tabs.get(tab_index).and_then(|tab| {
+                                    let sel = tab.content.selected as usize;
+                                    tab.content
+                                        .meta
+                                        .get(sel)
+                                        .and_then(|m| m.links.first().map(|l| l.url.clone()))
+                                });
+                                if let Some(url) = url_opt {
+                                    if (tabs.len() as u32) < config.max_tabs {
+                                        let idx = tabs.add("New Tab", url.clone());
+                                        if sidebar_open && sidebar.mode == SidebarMode::Tabs {
+                                            sidebar.cursor = idx;
+                                        }
+                                        let _ = action_tx
+                                            .send(Action::LoadUrl {
+                                                tab_index: idx,
+                                                url,
+                                                mode: NavigateMode::Push,
+                                            })
+                                            .await;
+                                    }
+                                }
+                                continue;
+                            }
+
                             if key.code == KeyCode::Enter {
                                 let tab_index = tabs.active;
 
@@ -2168,6 +2312,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Some(tab) => {
                                 tab.load_generation = tab.load_generation.wrapping_add(1);
                                 tab.url = url.clone();
+                                tab.pending_images = 0;
                                 match mode {
                                     NavigateMode::Push => {
                                         tab.history.push(url.clone());
@@ -2243,11 +2388,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let doc = document.read().await;
                             doc.title.clone()
                         };
+
+                        let mut images: Vec<(NodeId, String, Option<u16>)> = Vec::new();
+                        if config.autoload_images {
+                            let doc = document.read().await;
+                            for (id, node) in doc.iter() {
+                                if let NodeData::Image { src, height, .. } = node {
+                                    images.push((id, src.clone(), *height));
+                                }
+                            }
+                        }
+
                         if let Some(tab) = tabs.get_mut(tab_index) {
                             if tab.load_generation != generation {
                                 continue;
                             }
-                            tab.url = url;
+                            tab.url = url.clone();
                             if !title.is_empty() {
                                 tab.name = title;
                             }
@@ -2255,6 +2411,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tab.interactive_state = RenderState::default();
                             tab.content.set_rendered(rendered);
                             tab.rendered_width = loaded_width;
+                            tab.pending_images = images.len();
+                        }
+
+                        if images.is_empty() {
+                            let _ = action_tx
+                                .send(Action::LoadStage {
+                                    tab_index,
+                                    url: url.clone(),
+                                    stage: LoadStage::Done,
+                                })
+                                .await;
+                        } else {
+                            let _ = action_tx
+                                .send(Action::LoadStage {
+                                    tab_index,
+                                    url: url.clone(),
+                                    stage: LoadStage::Images,
+                                })
+                                .await;
+
+                            for (node_id, src, height_attr) in images {
+                                let tx = action_tx.clone();
+                                let base_url = url.clone();
+                                let vh = viewport_height;
+                                let timeout = config.timeout;
+
+                                tokio::spawn(async move {
+                                    let result = load_image_ascii(
+                                        &base_url,
+                                        &src,
+                                        height_attr,
+                                        vh,
+                                        timeout,
+                                    )
+                                    .await;
+                                    let _ = tx
+                                        .send(Action::ImageLoaded {
+                                            tab_index,
+                                            node_id,
+                                            result,
+                                            generation,
+                                        })
+                                        .await;
+                                });
+                            }
                         }
                     }
                     Action::LoadFailed { tab_index, url, error, generation } => {
@@ -2277,6 +2478,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tab.interactive_state = RenderState::default();
                             tab.content.set_rendered(rendered);
                             tab.rendered_width = viewport_width;
+                            tab.pending_images = 0;
                         }
                     }
                     Action::FormError { tab_index, form_id, message, generation } => {
@@ -2289,6 +2491,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         url_bar.force_idle();
                         if let Some(tab) = tabs.get_mut(tab_index) {
                             rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                        }
+                    }
+                    Action::ImageLoaded { tab_index, node_id, result, generation } => {
+                        let mut all_done = false;
+                        let mut url_for_stage = String::new();
+
+                        if let Some(tab) = tabs.get_mut(tab_index) {
+                            if tab.load_generation != generation {
+                                continue;
+                            }
+                            let state = match result {
+                                Ok(lines) => ImageState::Ready(lines),
+                                Err(e) => ImageState::Failed(e),
+                            };
+                            tab.interactive_state.images.insert(node_id, state);
+                            if tab.pending_images > 0 {
+                                tab.pending_images -= 1;
+                            }
+                            if tab.pending_images == 0 {
+                                all_done = true;
+                                url_for_stage = tab.url.clone();
+                            }
+                        }
+
+                        if let Some(tab) = tabs.get_mut(tab_index) {
+                            rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                        }
+
+                        if all_done {
+                            let _ = action_tx
+                                .send(Action::LoadStage {
+                                    tab_index,
+                                    url: url_for_stage,
+                                    stage: LoadStage::Done,
+                                })
+                                .await;
                         }
                     }
                 }

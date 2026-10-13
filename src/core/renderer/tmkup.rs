@@ -14,7 +14,7 @@ use crate::core::document::{
 use crate::core::renderer::base::Renderer;
 use crate::core::renderer::code::get_code_renderer;
 use crate::core::renderer::meta::{
-    FieldValue, InteractiveFieldKind, LineMeta, Link, RenderState, RenderedContent,
+    FieldValue, ImageState, InteractiveFieldKind, LineMeta, Link, RenderState, RenderedContent,
 };
 use crate::core::renderer::theme::RendererTheme;
 
@@ -214,7 +214,19 @@ fn render_node(
         }
 
         NodeData::Image { alt, .. } => {
-            out.push_normal(Line::from(format!("[{}]", alt)));
+            match state.images.get(&id) {
+                Some(ImageState::Ready(lines)) => {
+                    for line in lines {
+                        out.push_normal(line.clone());
+                    }
+                }
+                Some(ImageState::Failed(err)) => {
+                    out.push_normal(Line::from(format!("[{}] (Error: {})", alt, err)));
+                }
+                Some(ImageState::Loading) | None => {
+                    out.push_normal(Line::from(format!("[{}]", alt)));
+                }
+            }
         }
 
         NodeData::BlockQuote { cite, date } => {

@@ -19,6 +19,7 @@ pub struct Tab {
     pub rendered_width: u16,
     pub history: LocalHistory,
     pub interactive_state: RenderState,
+    pub pending_images: usize,
 }
 
 impl Tab {
@@ -33,6 +34,7 @@ impl Tab {
             rendered_width: 0,
             history: LocalHistory::new(),
             interactive_state: RenderState::default(),
+            pending_images: 0,
         }
     }
 }

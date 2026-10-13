@@ -126,6 +126,15 @@ static P_KB_FAVORITE: ParamDef = ParamDef {
     default: DefaultValue::Str("v"),
 };
 
+static P_KB_OPEN_NEW_TAB: ParamDef = ParamDef {
+    key: "global.keybind.open_new_tab",
+    label: "Open link in a new tab",
+    description: "Key to open link in a new tab",
+    kind: ParamKind::Keybind,
+    active: always_active,
+    default: DefaultValue::Str(" "),
+};
+
 macro_rules! fav_param {
     ($name:ident, $key:literal, $label:literal, $default:literal) => {
         static $name: ParamDef = ParamDef {
@@ -162,6 +171,7 @@ const KEYBIND_CHILDREN: &[ItemDef] = &[
     ItemDef::Param(&P_KB_BACK),
     ItemDef::Param(&P_KB_FORWARD),
     ItemDef::Param(&P_KB_RELOAD),
+    ItemDef::Param(&P_KB_OPEN_NEW_TAB),
     ItemDef::Param(&P_KB_FAVORITE),
     ItemDef::Param(&P_KB_FAV_1),
     ItemDef::Param(&P_KB_FAV_2),

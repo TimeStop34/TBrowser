@@ -17,6 +17,7 @@ pub enum LoadStage {
     Fetching,
     Parsing,
     Rendering,
+    Images,
     Done,
 }
 
@@ -24,9 +25,10 @@ impl LoadStage {
     pub fn progress(&self) -> f64 {
         match self {
             LoadStage::Idle => 0.0,
-            LoadStage::Fetching => 0.25,
-            LoadStage::Parsing => 0.50,
-            LoadStage::Rendering => 0.75,
+            LoadStage::Fetching => 0.2,
+            LoadStage::Parsing => 0.4,
+            LoadStage::Rendering => 0.6,
+            LoadStage::Images => 0.8,
             LoadStage::Done => 1.0,
         }
     }

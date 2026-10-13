@@ -24,6 +24,7 @@ pub struct Config {
     pub kb_reload: String,
     pub kb_bookmarks: String,
     pub kb_favorite: String,
+    pub kb_open_new_tab: String,
     pub kb_favorites: [String; 10],
 }
 
@@ -77,6 +78,7 @@ impl Config {
         get_kb!("global.keybind.reload", kb_reload);
         get_kb!("global.keybind.bookmarks", kb_bookmarks);
         get_kb!("global.keybind.favorite", kb_favorite);
+        get_kb!("global.keybind.open_new_tab", kb_open_new_tab);
 
         for (i, key) in [
             "global.keybind.favorite_1",
@@ -127,6 +129,7 @@ impl Default for Config {
             kb_reload: "r".to_string(),
             kb_bookmarks: "m".to_string(),
             kb_favorite: "v".to_string(),
+            kb_open_new_tab: "Ctrl+Enter".to_string(),
             kb_favorites: [
                 "1".to_string(),
                 "2".to_string(),
