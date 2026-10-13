@@ -58,6 +58,12 @@ pub enum LineKind {
         field_index: usize,
         option_index: usize,
     },
+    FormSubmit {
+        form_id: NodeId,
+    },
+    FormReset {
+        form_id: NodeId,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +156,20 @@ impl LineMeta {
             links: Vec::new(),
         }
     }
+
+    pub fn form_submit(form_id: NodeId) -> Self {
+        Self {
+            kind: LineKind::FormSubmit { form_id },
+            links: Vec::new(),
+        }
+    }
+
+    pub fn form_reset(form_id: NodeId) -> Self {
+        Self {
+            kind: LineKind::FormReset { form_id },
+            links: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -176,4 +196,6 @@ pub struct RenderState {
     pub spoilers: HashMap<NodeId, bool>,
     pub fields: HashMap<(NodeId, usize), FieldValue>,
     pub select_open: HashSet<(NodeId, usize)>,
+    pub field_errors: HashSet<(NodeId, usize)>,
+    pub form_errors: HashMap<NodeId, String>,
 }

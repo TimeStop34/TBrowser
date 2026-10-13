@@ -21,12 +21,12 @@ use core::info::build_info_text;
 use core::parser::get_parser;
 use core::renderer::{get_renderer, NoTheme, RendererTheme, RenderedContent, RenderState};
 use core::{
-    build_error_page, Config, Document, FieldValue, FormField, InteractiveFieldKind, LineKind,
-    Tab, TabManager,
+    build_error_page, Config, Document, FieldValue, FormField, FormItem, InteractiveFieldKind,
+    LineKind, Tab, TabManager,
 };
 use guard::TuiGuard;
 use network::base::FetchOptions;
-use network::factory::get_protocol;
+use network::factory::{get_post_protocol, get_protocol};
 use ui::{
     ButtonCallback, ConfirmDialog, EditKind, GlobalTheme, Header, InputDialog, KeybindDialog,
     KeybindHint, LoadStage, MainFocus, MainSpace, Menu, MenuButton, Scrollbar, SettingsColumn,
@@ -64,6 +64,12 @@ enum Action {
         tab_index: usize,
         url: String,
         error: String,
+        generation: u64,
+    },
+    FormError {
+        tab_index: usize,
+        form_id: NodeId,
+        message: String,
         generation: u64,
     },
 }
@@ -278,6 +284,68 @@ async fn rerender_tab(tab: &mut Tab, theme: &dyn RendererTheme, width: u16) {
     tab.rendered_width = width;
 }
 
+async fn do_form_reset(
+    tabs: &mut TabManager,
+    tab_index: usize,
+    form_id: NodeId,
+    theme: &dyn RendererTheme,
+    viewport_width: u16,
+) {
+    let items: Vec<FormItem> = match tabs.get(tab_index) {
+        Some(tab) => match &tab.document {
+            Some(arc) => {
+                let guard = arc.read().await;
+                match guard.find_form(form_id) {
+                    Some((_, _, items)) => items.to_vec(),
+                    None => return,
+                }
+            }
+            None => return,
+        },
+        None => return,
+    };
+
+    if let Some(tab) = tabs.get_mut(tab_index) {
+        let mut field_index = 0usize;
+        for item in &items {
+            if let FormItem::Field(field) = item {
+                let key = (form_id, field_index);
+                tab.interactive_state.field_errors.remove(&key);
+                tab.interactive_state.select_open.remove(&key);
+                match field {
+                    FormField::Text { .. } | FormField::Textarea { .. } => {
+                        tab.interactive_state.fields.remove(&key);
+                    }
+                    FormField::Checkbox { checked, .. } => {
+                        tab.interactive_state
+                            .fields
+                            .insert(key, FieldValue::Checked(*checked));
+                    }
+                    FormField::Radio { options, .. } => {
+                        let idx = options.iter().position(|o| o.checked).unwrap_or(0);
+                        tab.interactive_state
+                            .fields
+                            .insert(key, FieldValue::Index(idx));
+                    }
+                    FormField::Select { options, .. } => {
+                        let idx = options.iter().position(|o| o.selected).unwrap_or(0);
+                        tab.interactive_state
+                            .fields
+                            .insert(key, FieldValue::Index(idx));
+                    }
+                    _ => {}
+                }
+                field_index += 1;
+            }
+        }
+        tab.interactive_state.form_errors.remove(&form_id);
+    }
+
+    if let Some(tab) = tabs.get_mut(tab_index) {
+        rerender_tab(tab, theme, viewport_width).await;
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_guard, mut terminal) = TuiGuard::new();
@@ -346,6 +414,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sidebar_open = false;
     let mut pending_delete_tab: Option<usize> = None;
     let mut pending_delete_bookmark: Option<usize> = None;
+    let mut pending_form_reset: Option<(usize, NodeId)> = None;
     let mut pending_field: Option<(NodeId, usize)> = None;
 
     if !config.homepage.is_empty() {
@@ -623,9 +692,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     bookmarks.remove(idx);
                                     sidebar.clamp_cursor(bookmarks.len());
                                 }
+                                if let Some((tab_idx, form_id)) = pending_form_reset.take() {
+                                    do_form_reset(&mut tabs, tab_idx, form_id, theme.as_ref(), viewport_width).await;
+                                }
                             } else {
                                 pending_delete_tab = None;
                                 pending_delete_bookmark = None;
+                                pending_form_reset = None;
                             }
                         }
                         continue;
@@ -644,6 +717,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     tab.interactive_state
                                         .fields
                                         .insert((form_id, field_index), FieldValue::Text(value));
+                                    tab.interactive_state
+                                        .field_errors
+                                        .remove(&(form_id, field_index));
                                 }
                                 if let Some(tab) = tabs.get_mut(tab_index) {
                                     rerender_tab(tab, theme.as_ref(), viewport_width).await;
@@ -1172,6 +1248,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     CloseSelect(NodeId, usize),
                                     OpenText(NodeId, usize, InteractiveFieldKind),
                                     LoadUrl(String),
+                                    SubmitForm(NodeId),
+                                    ResetForm(NodeId),
                                 }
 
                                 let decision = match tabs.get(tab_index) {
@@ -1225,6 +1303,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     option_index,
                                                 ),
 
+                                                LineKind::FormSubmit { form_id } => {
+                                                    Decision::SubmitForm(form_id)
+                                                }
+
+                                                LineKind::FormReset { form_id } => {
+                                                    Decision::ResetForm(form_id)
+                                                }
+
                                                 LineKind::Normal => {
                                                     if let Some(link) = meta.links.first() {
                                                         Decision::LoadUrl(link.url.clone())
@@ -1265,6 +1351,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 (fid, fi),
                                                 FieldValue::Checked(!prev),
                                             );
+                                            tab.interactive_state
+                                                .field_errors
+                                                .remove(&(fid, fi));
                                         }
                                         if let Some(tab) = tabs.get_mut(tab_index) {
                                             rerender_tab(tab, theme.as_ref(), viewport_width)
@@ -1278,8 +1367,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             tab.interactive_state
                                                 .fields
                                                 .insert((fid, fi), FieldValue::Index(idx));
-                                            // Если это select-опция — закрываем дропдаун
                                             tab.interactive_state.select_open.remove(&(fid, fi));
+                                            tab.interactive_state
+                                                .field_errors
+                                                .remove(&(fid, fi));
                                         }
                                         if let Some(tab) = tabs.get_mut(tab_index) {
                                             rerender_tab(tab, theme.as_ref(), viewport_width)
@@ -1353,6 +1444,335 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 mode: NavigateMode::Push,
                                             })
                                             .await;
+                                        continue;
+                                    }
+
+                                    Decision::SubmitForm(form_id) => {
+                                        // 1. Прочитать форму
+                                        let form_data: Option<(String, Vec<FormItem>)> =
+                                            match tabs.get(tab_index) {
+                                                Some(tab) if tab.document.is_some() => {
+                                                    let arc = tab.document.clone().unwrap();
+                                                    let guard = arc.read().await;
+                                                    guard.find_form(form_id).map(|(a, _m, items)| {
+                                                        (a.to_string(), items.to_vec())
+                                                    })
+                                                }
+                                                _ => None,
+                                            };
+
+                                        let Some((action_str, items)) = form_data else {
+                                            continue;
+                                        };
+
+                                        let state = tabs
+                                            .get(tab_index)
+                                            .map(|t| t.interactive_state.clone())
+                                            .unwrap_or_default();
+
+                                        // 2. Собрать данные, проверить required
+                                        let mut data: Vec<(String, String)> = Vec::new();
+                                        let mut errors: Vec<(NodeId, usize)> = Vec::new();
+                                        let mut field_index = 0usize;
+
+                                        for item in &items {
+                                            if let FormItem::Field(field) = item {
+                                                let key = (form_id, field_index);
+                                                let val = state.fields.get(&key);
+
+                                                match field {
+                                                    FormField::Text {
+                                                        name,
+                                                        required,
+                                                        value,
+                                                        ..
+                                                    }
+                                                    | FormField::Textarea {
+                                                        name,
+                                                        required,
+                                                        value,
+                                                        ..
+                                                    } => {
+                                                        let text = match val {
+                                                            Some(FieldValue::Text(t)) => t.clone(),
+                                                            _ => value.clone(),
+                                                        };
+                                                        if *required && text.trim().is_empty() {
+                                                            errors.push(key);
+                                                        }
+                                                        if !name.is_empty() {
+                                                            data.push((name.clone(), text));
+                                                        }
+                                                    }
+                                                    FormField::Checkbox {
+                                                        name,
+                                                        checked,
+                                                        required,
+                                                        ..
+                                                    } => {
+                                                        let is_checked = match val {
+                                                            Some(FieldValue::Checked(b)) => *b,
+                                                            _ => *checked,
+                                                        };
+                                                        if *required && !is_checked {
+                                                            errors.push(key);
+                                                        }
+                                                        if is_checked && !name.is_empty() {
+                                                            data.push((name.clone(), "on".to_string()));
+                                                        }
+                                                    }
+                                                    FormField::Radio { name, options, .. } => {
+                                                        let idx = match val {
+                                                            Some(FieldValue::Index(i)) => *i,
+                                                            _ => options
+                                                                .iter()
+                                                                .position(|o| o.checked)
+                                                                .unwrap_or(0),
+                                                        };
+                                                        if let Some(opt) = options.get(idx) {
+                                                            if !name.is_empty() {
+                                                                data.push((name.clone(), opt.value.clone()));
+                                                            }
+                                                        }
+                                                    }
+                                                    FormField::Select { name, options, .. } => {
+                                                        let idx = match val {
+                                                            Some(FieldValue::Index(i)) => *i,
+                                                            _ => options
+                                                                .iter()
+                                                                .position(|o| o.selected)
+                                                                .unwrap_or(0),
+                                                        };
+                                                        if let Some(opt) = options.get(idx) {
+                                                            if !name.is_empty() {
+                                                                data.push((name.clone(), opt.value.clone()));
+                                                            }
+                                                        }
+                                                    }
+                                                    FormField::Hidden { name, value } => {
+                                                        if !name.is_empty() {
+                                                            data.push((name.clone(), value.clone()));
+                                                        }
+                                                    }
+                                                    FormField::Submit { .. }
+                                                    | FormField::Reset { .. } => {}
+                                                }
+                                                field_index += 1;
+                                            }
+                                        }
+
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            tab.interactive_state
+                                                .field_errors
+                                                .retain(|(fid, _)| *fid != form_id);
+                                        }
+
+                                        if !errors.is_empty() {
+                                            if let Some(tab) = tabs.get_mut(tab_index) {
+                                                tab.interactive_state
+                                                    .form_errors
+                                                    .remove(&form_id);
+                                                for key in errors {
+                                                    tab.interactive_state
+                                                        .field_errors
+                                                        .insert(key);
+                                                }
+                                            }
+                                            if let Some(tab) = tabs.get_mut(tab_index) {
+                                                rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                    .await;
+                                            }
+                                            continue;
+                                        }
+
+                                        // 3. Резолв URL
+                                        let tab_url = tabs
+                                            .get(tab_index)
+                                            .map(|t| t.url.clone())
+                                            .unwrap_or_default();
+                                        let full_url = if action_str.is_empty() {
+                                            tab_url.clone()
+                                        } else {
+                                            Url::parse(&tab_url)
+                                                .and_then(|b| b.join(&action_str))
+                                                .map(|u| u.to_string())
+                                                .unwrap_or(action_str.clone())
+                                        };
+
+                                        let scheme = Url::parse(&full_url)
+                                            .map(|u| u.scheme().to_string())
+                                            .unwrap_or_default();
+
+                                        if scheme != "tmutp" {
+                                            if let Some(tab) = tabs.get_mut(tab_index) {
+                                                tab.interactive_state.form_errors.insert(
+                                                    form_id,
+                                                    format!("POST not supported for scheme: {}", scheme),
+                                                );
+                                            }
+                                            if let Some(tab) = tabs.get_mut(tab_index) {
+                                                rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                    .await;
+                                            }
+                                            continue;
+                                        }
+
+                                        // 4. Обновить состояние вкладки и запустить POST
+                                        let generation = match tabs.get_mut(tab_index) {
+                                            Some(tab) => {
+                                                tab.interactive_state
+                                                    .form_errors
+                                                    .remove(&form_id);
+                                                tab.interactive_state.field_errors.clear();
+                                                tab.load_generation =
+                                                    tab.load_generation.wrapping_add(1);
+                                                tab.history.push(full_url.clone());
+                                                tab.load_generation
+                                            }
+                                            None => continue,
+                                        };
+
+                                        if let Some(tab) = tabs.get_mut(tab_index) {
+                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                .await;
+                                        }
+
+                                        url_bar.begin(full_url.clone(), tab_index);
+
+                                        let tx = action_tx.clone();
+                                        let tab_index_c = tab_index;
+                                        let full_url_c = full_url.clone();
+                                        let theme_c = Arc::clone(&theme);
+                                        let width = viewport_width;
+                                        let timeout = config.timeout;
+
+                                        tokio::spawn(async move {
+                                            let client = match get_post_protocol("tmutp") {
+                                                Some(c) => c,
+                                                None => {
+                                                    let _ = tx
+                                                        .send(Action::FormError {
+                                                            tab_index: tab_index_c,
+                                                            form_id,
+                                                            message: "POST not supported".to_string(),
+                                                            generation,
+                                                        })
+                                                        .await;
+                                                    return;
+                                                }
+                                            };
+
+                                            let data_refs: Vec<(&str, &str)> = data
+                                                .iter()
+                                                .map(|(k, v)| (k.as_str(), v.as_str()))
+                                                .collect();
+
+                                            let result = tokio::time::timeout(
+                                                Duration::from_secs(timeout.max(1)),
+                                                client.post(&full_url_c, &data_refs, None),
+                                            )
+                                            .await;
+
+                                            match result {
+                                                Ok(Ok(response)) => {
+                                                    let content_type = response
+                                                        .headers
+                                                        .get("content-type")
+                                                        .map(String::as_str)
+                                                        .unwrap_or("text/plain")
+                                                        .to_string();
+                                                    let parser = get_parser(&content_type);
+                                                    let doc = parser
+                                                        .parse(&response.text, &content_type)
+                                                        .await;
+                                                    let renderer = get_renderer(&content_type);
+                                                    let empty = RenderState::default();
+                                                    match renderer
+                                                        .render(
+                                                            &doc,
+                                                            &full_url_c,
+                                                            theme_c.as_ref(),
+                                                            width,
+                                                            &empty,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Ok(rendered) => {
+                                                            let _ = tx
+                                                                .send(Action::Loaded {
+                                                                    tab_index: tab_index_c,
+                                                                    url: full_url_c,
+                                                                    document: Arc::new(
+                                                                        RwLock::new(doc),
+                                                                    ),
+                                                                    rendered,
+                                                                    generation,
+                                                                    viewport_width: width,
+                                                                })
+                                                                .await;
+                                                        }
+                                                        Err(e) => {
+                                                            let _ = tx
+                                                                .send(Action::FormError {
+                                                                    tab_index: tab_index_c,
+                                                                    form_id,
+                                                                    message: format!(
+                                                                        "Render error: {}",
+                                                                        e
+                                                                    ),
+                                                                    generation,
+                                                                })
+                                                                .await;
+                                                        }
+                                                    }
+                                                }
+                                                Ok(Err(e)) => {
+                                                    let _ = tx
+                                                        .send(Action::FormError {
+                                                            tab_index: tab_index_c,
+                                                            form_id,
+                                                            message: format!(
+                                                                "POST failed: {}",
+                                                                e
+                                                            ),
+                                                            generation,
+                                                        })
+                                                        .await;
+                                                }
+                                                Err(_) => {
+                                                    let _ = tx
+                                                        .send(Action::FormError {
+                                                            tab_index: tab_index_c,
+                                                            form_id,
+                                                            message: format!(
+                                                                "POST timed out after {}s",
+                                                                timeout
+                                                            ),
+                                                            generation,
+                                                        })
+                                                        .await;
+                                                }
+                                            }
+                                        });
+
+                                        continue;
+                                    }
+
+                                    Decision::ResetForm(form_id) => {
+                                        if config.form_reset {
+                                            pending_form_reset = Some((tab_index, form_id));
+                                            confirm_dialog
+                                                .open("Reset Form", "Reset all fields in this form?");
+                                        } else {
+                                            do_form_reset(
+                                                &mut tabs,
+                                                tab_index,
+                                                form_id,
+                                                theme.as_ref(),
+                                                viewport_width,
+                                            )
+                                            .await;
+                                        }
                                         continue;
                                     }
                                 }
@@ -1545,6 +1965,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tab.interactive_state = RenderState::default();
                             tab.content.set_rendered(rendered);
                             tab.rendered_width = viewport_width;
+                        }
+                    }
+                    Action::FormError { tab_index, form_id, message, generation } => {
+                        if let Some(tab) = tabs.get_mut(tab_index) {
+                            if tab.load_generation != generation {
+                                continue;
+                            }
+                            tab.interactive_state.form_errors.insert(form_id, message);
+                        }
+                        url_bar.force_idle();
+                        if let Some(tab) = tabs.get_mut(tab_index) {
+                            rerender_tab(tab, theme.as_ref(), viewport_width).await;
                         }
                     }
                 }

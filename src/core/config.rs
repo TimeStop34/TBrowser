@@ -9,6 +9,7 @@ pub struct Config {
     pub follow_redirects: bool,
     pub url_bar_hold_ms: u64,
     pub delete_confirmation: bool,
+    pub form_reset: bool,
 
     pub kb_info: String,
     pub kb_tabs: String,
@@ -50,6 +51,9 @@ impl Config {
         }
         if let Some(Value::Bool(b)) = settings.get("global.keybind.delete_hint") {
             cfg.delete_confirmation = *b;
+        }
+        if let Some(Value::Bool(b)) = settings.get("global.form_reset") {
+            cfg.form_reset = *b;
         }
 
         macro_rules! get_kb {
@@ -108,6 +112,7 @@ impl Default for Config {
             follow_redirects: true,
             url_bar_hold_ms: 300,
             delete_confirmation: true,
+            form_reset: false,
 
             kb_info: "i".to_string(),
             kb_tabs: "t".to_string(),

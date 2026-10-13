@@ -20,7 +20,7 @@ pub use config::Config;
 pub use content::Content;
 
 #[allow(unused)]
-pub use document::{Document, FormField, MetaValue, NodeData, Span, SpanStyle};
+pub use document::{Document, FormField, FormItem, MetaValue, NodeData, Span, SpanStyle};
 
 #[allow(unused)]
 pub use error_page::build_error_page;

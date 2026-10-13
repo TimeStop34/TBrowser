@@ -19,6 +19,7 @@ pub struct SpanStyle {
     pub subscript: bool,
     pub fg: Option<Color>,
     pub bg: Option<Color>,
+    pub reversed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +253,15 @@ impl Document {
                 .nth(field_index);
         }
         None
+    }
+
+    pub fn find_form(&self, form_id: NodeId) -> Option<(&str, &str, &[FormItem])> {
+        let node = self.arena.get(form_id)?;
+        if let NodeData::Form { action, method, items } = node.get() {
+            Some((action.as_str(), method.as_str(), items.as_slice()))
+        } else {
+            None
+        }
     }
 
     pub fn variables(&self) -> Option<&HashMap<String, String>> {

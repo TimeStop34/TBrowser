@@ -9,7 +9,7 @@ use url::Url;
 
 use crate::core::document::{
     Alignment, ColorBorder, Document, FieldKind, FormField, FormItem, InfoKind, ListMarker,
-    NodeData, Span,
+    NodeData, Span, SpanStyle,
 };
 use crate::core::renderer::base::Renderer;
 use crate::core::renderer::code::get_code_renderer;
@@ -587,6 +587,18 @@ fn render_table(
     out.push_normal(Line::from(make_border('╚', '╩', '╝', '═')));
 }
 
+fn required_marker(form_id: NodeId, field_index: usize, state: &RenderState) -> Span {
+    let has_err = state.field_errors.contains(&(form_id, field_index));
+    Span {
+        text: "*".to_string(),
+        style: SpanStyle {
+            reversed: has_err,
+            ..Default::default()
+        },
+        link: None,
+    }
+}
+
 fn field_to_lines(
     field: &FormField,
     state: &RenderState,
@@ -604,8 +616,6 @@ fn field_to_lines(
             kind,
             ..
         } => {
-            let req = if *required { " *" } else { "" };
-
             let display = match state.fields.get(&key) {
                 Some(FieldValue::Text(t)) => {
                     if t.is_empty() {
@@ -635,12 +645,10 @@ fn field_to_lines(
                 }
             };
 
-            let line = vec![Span::raw(format!(
-                "  {}: {} {}",
-                label,
-                display,
-                req.trim_end()
-            ))];
+            let mut spans = vec![Span::raw(format!("  {}: {} ", label, display))];
+            if *required {
+                spans.push(required_marker(form_id, field_index, state));
+            }
 
             let ifk = match kind {
                 FieldKind::Email => InteractiveFieldKind::Email,
@@ -648,7 +656,7 @@ fn field_to_lines(
                 FieldKind::Text => InteractiveFieldKind::Text,
             };
             (
-                vec![line],
+                vec![spans],
                 vec![LineMeta::form_text(form_id, field_index, ifk)],
             )
         }
@@ -659,7 +667,6 @@ fn field_to_lines(
             value,
             ..
         } => {
-            let req = if *required { " *" } else { "" };
             let display = match state.fields.get(&key) {
                 Some(FieldValue::Text(t)) if !t.is_empty() => t.clone(),
                 _ => {
@@ -670,14 +677,13 @@ fn field_to_lines(
                     }
                 }
             };
-            let line = vec![Span::raw(format!(
-                "  {}:{} {}",
-                label,
-                req.trim_end(),
-                display
-            ))];
+            let mut spans = vec![Span::raw(format!("  {}: {}", label, display))];
+            if *required {
+                spans.push(Span::raw(" "));
+                spans.push(required_marker(form_id, field_index, state));
+            }
             (
-                vec![line],
+                vec![spans],
                 vec![LineMeta::form_text(
                     form_id,
                     field_index,
@@ -691,17 +697,18 @@ fn field_to_lines(
             required,
             ..
         } => {
-            let req = if *required { " *" } else { "" };
             let display_checked = match state.fields.get(&key) {
                 Some(FieldValue::Checked(b)) => *b,
                 _ => *checked,
             };
             let mark = if display_checked { "[x]" } else { "[ ]" };
+            let mut spans = vec![Span::raw(format!("  {} {}", mark, label))];
+            if *required {
+                spans.push(Span::raw(" "));
+                spans.push(required_marker(form_id, field_index, state));
+            }
             (
-                vec![vec![Span::raw(format!(
-                    "  {} {}{}",
-                    mark, label, req
-                ))]],
+                vec![spans],
                 vec![LineMeta::form_checkbox(form_id, field_index)],
             )
         }
@@ -751,13 +758,25 @@ fn field_to_lines(
                 )
             }
         }
-        FormField::Submit { label } => (
-            vec![vec![Span::raw(format!("  [ {} ]", label))]],
-            vec![LineMeta::normal()],
-        ),
+        FormField::Submit { label } => {
+            let mut lines = vec![vec![Span::raw(format!("  [ {} ]", label))]];
+            let mut metas = vec![LineMeta::form_submit(form_id)];
+            if let Some(err) = state.form_errors.get(&form_id) {
+                lines.push(vec![Span {
+                    text: format!("  {}", err),
+                    style: SpanStyle {
+                        fg: Some(Color::Red),
+                        ..Default::default()
+                    },
+                    link: None,
+                }]);
+                metas.push(LineMeta::normal());
+            }
+            (lines, metas)
+        }
         FormField::Reset { label } => (
             vec![vec![Span::raw(format!("  [ {} ]", label))]],
-            vec![LineMeta::normal()],
+            vec![LineMeta::form_reset(form_id)],
         ),
         FormField::Hidden { .. } => (vec![], vec![]),
     }
@@ -786,6 +805,9 @@ fn span_style(s: &Span) -> Style {
     }
     if s.style.subscript {
         st = st.add_modifier(Modifier::DIM);
+    }
+    if s.style.reversed {
+        st = st.add_modifier(Modifier::REVERSED);
     }
     if s.style.code {
         st = st.fg(Color::Yellow);
