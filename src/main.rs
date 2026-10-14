@@ -21,9 +21,8 @@ mod ui;
 use core::bookmarks::Bookmarks;
 use core::info::build_info_text;
 use core::parser::get_parser;
-use core::renderer::{
-    get_renderer, ImageState, NoTheme, RendererTheme, RenderedContent, RenderState,
-};
+use core::renderer::{get_renderer, ImageState, RenderedContent, RenderState};
+use core::settings::Settings;
 use core::{
     build_error_page, Config, Document, FieldKind, FieldValue, FormField, FormItem,
     InteractiveFieldKind, LineKind, NodeData, Tab, TabManager,
@@ -314,7 +313,7 @@ async fn load_image_ascii(
 async fn load_url(
     url: &str,
     tab_index: usize,
-    theme: Arc<dyn RendererTheme>,
+    settings: Settings,
     viewport_width: u16,
     timeout_secs: u64,
     follow_redirects: bool,
@@ -324,9 +323,9 @@ async fn load_url(
     let empty_state = RenderState::default();
 
     if let Some(doc) = build_special_page(url) {
-        let renderer = get_renderer(&doc.content_type);
+        let renderer = get_renderer(&doc.content_type, &settings);
         let rendered = renderer
-            .render(&doc, url, theme.as_ref(), viewport_width, &empty_state)
+            .render(&doc, url, viewport_width, &empty_state)
             .await?;
         return Ok((doc, rendered));
     }
@@ -383,9 +382,9 @@ async fn load_url(
         })
         .await;
 
-    let renderer = get_renderer(&content_type);
+    let renderer = get_renderer(&content_type, &settings);
     let rendered = renderer
-        .render(&doc, url, theme.as_ref(), viewport_width, &empty_state)
+        .render(&doc, url, viewport_width, &empty_state)
         .await?;
 
     let _ = generation;
@@ -401,16 +400,16 @@ fn spawn_hint(hint: &mut KeybindHint, text: &str, duration_ms: u64, tx: mpsc::Se
     });
 }
 
-async fn rerender_tab(tab: &mut Tab, theme: &dyn RendererTheme, width: u16) {
+async fn rerender_tab(tab: &mut Tab, settings: &Settings, width: u16) {
     let Some(doc_arc) = tab.document.clone() else {
         tab.rendered_width = width;
         return;
     };
     let doc = doc_arc.read().await;
-    let renderer = get_renderer(&doc.content_type);
+    let renderer = get_renderer(&doc.content_type, settings);
     let url = tab.url.clone();
     let state = tab.interactive_state.clone();
-    let result = renderer.render(&doc, &url, theme, width, &state).await;
+    let result = renderer.render(&doc, &url, width, &state).await;
     drop(doc);
     if let Ok(rendered) = result {
         let saved_scroll = tab.content.scroll;
@@ -428,7 +427,7 @@ async fn do_form_reset(
     tabs: &mut TabManager,
     tab_index: usize,
     form_id: NodeId,
-    theme: &dyn RendererTheme,
+    settings: &Settings,
     viewport_width: u16,
 ) {
     let items: Vec<FormItem> = match tabs.get(tab_index) {
@@ -482,7 +481,7 @@ async fn do_form_reset(
     }
 
     if let Some(tab) = tabs.get_mut(tab_index) {
-        rerender_tab(tab, theme, viewport_width).await;
+        rerender_tab(tab, settings, viewport_width).await;
     }
 }
 
@@ -603,8 +602,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let theme: Arc<dyn RendererTheme> = Arc::new(NoTheme);
-
     let tab_index = tabs.active;
     let initial_url = tabs.active().map(|t| t.url.clone()).unwrap_or_default();
     if !initial_url.is_empty() {
@@ -624,9 +621,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut running = true;
 
     while running {
+        let settings_snapshot = settings_view.settings.clone();
+
         if let Some(tab) = tabs.active_mut() {
             if tab.document.is_some() && tab.rendered_width != viewport_width {
-                rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                rerender_tab(tab, &settings_snapshot, viewport_width).await;
             }
         }
 
@@ -919,7 +918,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     sidebar.clamp_cursor(bookmarks.len());
                                 }
                                 if let Some((tab_idx, form_id)) = pending_form_reset.take() {
-                                    do_form_reset(&mut tabs, tab_idx, form_id, theme.as_ref(), viewport_width).await;
+                                    do_form_reset(
+                                        &mut tabs,
+                                        tab_idx,
+                                        form_id,
+                                        &settings_snapshot,
+                                        viewport_width,
+                                    )
+                                    .await;
                                 }
                             } else {
                                 pending_delete_tab = None;
@@ -963,7 +969,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .remove(&(form_id, field_index));
                                 }
                                 if let Some(tab) = tabs.get_mut(tab_index) {
-                                    rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                                    rerender_tab(tab, &settings_snapshot, viewport_width).await;
                                 }
                             }
                             continue;
@@ -1054,7 +1060,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .insert(key, FieldValue::Text(edit.original.clone()));
                             }
                             if let Some(tab) = tabs.get_mut(tab_index) {
-                                rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                                rerender_tab(tab, &settings_snapshot, viewport_width).await;
                             }
                             inline_edit = None;
                             continue;
@@ -1069,7 +1075,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         if exit_apply {
                             if let Some(tab) = tabs.get_mut(tab_index) {
-                                rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                                rerender_tab(tab, &settings_snapshot, viewport_width).await;
                             }
                             inline_edit = None;
 
@@ -1088,7 +1094,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         if let Some(tab) = tabs.get_mut(tab_index) {
-                            rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                            rerender_tab(tab, &settings_snapshot, viewport_width).await;
                         }
                         inline_edit = Some(edit);
                         continue;
@@ -1726,7 +1732,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 .insert(id, new_val);
                                         }
                                         if let Some(tab) = tabs.get_mut(tab_index) {
-                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                            rerender_tab(tab, &settings_snapshot, viewport_width)
                                                 .await;
                                         }
                                         continue;
@@ -1747,7 +1753,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 .remove(&(fid, fi));
                                         }
                                         if let Some(tab) = tabs.get_mut(tab_index) {
-                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                            rerender_tab(tab, &settings_snapshot, viewport_width)
                                                 .await;
                                         }
                                         continue;
@@ -1764,7 +1770,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 .remove(&(fid, fi));
                                         }
                                         if let Some(tab) = tabs.get_mut(tab_index) {
-                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                            rerender_tab(tab, &settings_snapshot, viewport_width)
                                                 .await;
                                         }
                                         continue;
@@ -1775,7 +1781,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             tab.interactive_state.select_open.insert((fid, fi));
                                         }
                                         if let Some(tab) = tabs.get_mut(tab_index) {
-                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                            rerender_tab(tab, &settings_snapshot, viewport_width)
                                                 .await;
                                         }
                                         continue;
@@ -1786,7 +1792,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             tab.interactive_state.select_open.remove(&(fid, fi));
                                         }
                                         if let Some(tab) = tabs.get_mut(tab_index) {
-                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                            rerender_tab(tab, &settings_snapshot, viewport_width)
                                                 .await;
                                         }
                                         continue;
@@ -2036,7 +2042,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 }
                                             }
                                             if let Some(tab) = tabs.get_mut(tab_index) {
-                                                rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                rerender_tab(tab, &settings_snapshot, viewport_width)
                                                     .await;
                                             }
                                             continue;
@@ -2067,7 +2073,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 );
                                             }
                                             if let Some(tab) = tabs.get_mut(tab_index) {
-                                                rerender_tab(tab, theme.as_ref(), viewport_width)
+                                                rerender_tab(tab, &settings_snapshot, viewport_width)
                                                     .await;
                                             }
                                             continue;
@@ -2088,7 +2094,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         };
 
                                         if let Some(tab) = tabs.get_mut(tab_index) {
-                                            rerender_tab(tab, theme.as_ref(), viewport_width)
+                                            rerender_tab(tab, &settings_snapshot, viewport_width)
                                                 .await;
                                         }
 
@@ -2097,7 +2103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let tx = action_tx.clone();
                                         let tab_index_c = tab_index;
                                         let full_url_c = full_url.clone();
-                                        let theme_c = Arc::clone(&theme);
+                                        let settings_c = settings_snapshot.clone();
                                         let width = viewport_width;
                                         let timeout = config.timeout;
 
@@ -2140,13 +2146,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     let doc = parser
                                                         .parse(&response.text, &content_type)
                                                         .await;
-                                                    let renderer = get_renderer(&content_type);
+                                                    let renderer = get_renderer(&content_type, &settings_c);
                                                     let empty = RenderState::default();
                                                     match renderer
                                                         .render(
                                                             &doc,
                                                             &full_url_c,
-                                                            theme_c.as_ref(),
                                                             width,
                                                             &empty,
                                                         )
@@ -2223,7 +2228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 &mut tabs,
                                                 tab_index,
                                                 form_id,
-                                                theme.as_ref(),
+                                                &settings_snapshot,
                                                 viewport_width,
                                             )
                                             .await;
@@ -2283,6 +2288,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Action::CloseSettings => {
                         config = Config::from_settings(&settings_view.settings);
+                        for i in 0..tabs.len() {
+                            if let Some(tab) = tabs.get_mut(i) {
+                                rerender_tab(tab, &settings_view.settings, viewport_width).await;
+                            }
+                        }
                         screen = Screen::Main;
                         main_focus = MainFocus::MainSpace;
                     }
@@ -2334,7 +2344,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         let tx = action_tx.clone();
-                        let theme = Arc::clone(&theme);
+                        let settings_c = settings_view.settings.clone();
                         let width = viewport_width;
                         let timeout = config.timeout;
                         let follow = config.follow_redirects;
@@ -2342,7 +2352,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match load_url(
                                 &url,
                                 tab_index,
-                                theme,
+                                settings_c,
                                 width,
                                 timeout,
                                 follow,
@@ -2468,10 +2478,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             tab.url = url.clone();
                             let doc = build_error_page(&url, &error);
-                            let renderer = get_renderer(&doc.content_type);
+                            let renderer = get_renderer(&doc.content_type, &settings_view.settings);
                             let empty = RenderState::default();
                             let rendered = renderer
-                                .render(&doc, &url, theme.as_ref(), viewport_width, &empty)
+                                .render(&doc, &url, viewport_width, &empty)
                                 .await
                                 .unwrap_or_else(|_| RenderedContent::empty());
                             tab.document = Some(Arc::new(RwLock::new(doc)));
@@ -2490,7 +2500,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         url_bar.force_idle();
                         if let Some(tab) = tabs.get_mut(tab_index) {
-                            rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                            rerender_tab(tab, &settings_view.settings, viewport_width).await;
                         }
                     }
                     Action::ImageLoaded { tab_index, node_id, result, generation } => {
@@ -2516,7 +2526,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         if let Some(tab) = tabs.get_mut(tab_index) {
-                            rerender_tab(tab, theme.as_ref(), viewport_width).await;
+                            rerender_tab(tab, &settings_view.settings, viewport_width).await;
                         }
 
                         if all_done {

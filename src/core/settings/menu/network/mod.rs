@@ -3,7 +3,7 @@ use crate::core::settings::{DefaultValue, def::{
 }};
 
 static P_TIMEOUT: ParamDef = ParamDef {
-    key: "network.timeout",
+    key: "timeout",
     label: "Timeout",
     description: "Timeout of network request in seconds",
     kind: ParamKind::Int,
@@ -12,7 +12,7 @@ static P_TIMEOUT: ParamDef = ParamDef {
 };
 
 static P_FOLLOW_REDIRECTS: ParamDef = ParamDef {
-    key: "network.follow_redirects",
+    key: "follow_redirects",
     label: "Follow redirects",
     description: "Automatically follow tmutp redirects",
     kind: ParamKind::Bool,

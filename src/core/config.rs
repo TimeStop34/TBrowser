@@ -47,14 +47,11 @@ impl Config {
         if let Some(Value::Bool(b)) = settings.get("network.follow_redirects") {
             cfg.follow_redirects = *b;
         }
-        if let Some(Value::Float(f)) = settings.get("theme.url_bar_hold") {
+        if let Some(Value::Float(f)) = settings.get("appearance.layout.url_bar_hold") {
             cfg.url_bar_hold_ms = (f.max(0.0) * 1000.0) as u64;
         }
-        if let Some(Value::Bool(b)) = settings.get("global.keybind.delete_hint") {
+        if let Some(Value::Bool(b)) = settings.get("general.keybind.delete_hint") {
             cfg.delete_confirmation = *b;
-        }
-        if let Some(Value::Bool(b)) = settings.get("global.form_reset") {
-            cfg.form_reset = *b;
         }
 
         macro_rules! get_kb {
@@ -65,32 +62,32 @@ impl Config {
             };
         }
 
-        get_kb!("global.keybind.info", kb_info);
-        get_kb!("global.keybind.tabs", kb_tabs);
-        get_kb!("global.keybind.settings", kb_settings);
-        get_kb!("global.keybind.quit", kb_quit);
-        get_kb!("global.keybind.create_tab", kb_create_tab);
-        get_kb!("global.keybind.delete_tab", kb_delete_tab);
-        get_kb!("global.keybind.next_tab", kb_next_tab);
-        get_kb!("global.keybind.prev_tab", kb_prev_tab);
-        get_kb!("global.keybind.back", kb_back);
-        get_kb!("global.keybind.forward", kb_forward);
-        get_kb!("global.keybind.reload", kb_reload);
-        get_kb!("global.keybind.bookmarks", kb_bookmarks);
-        get_kb!("global.keybind.favorite", kb_favorite);
-        get_kb!("global.keybind.open_new_tab", kb_open_new_tab);
+        get_kb!("general.keybind.info", kb_info);
+        get_kb!("general.keybind.tabs", kb_tabs);
+        get_kb!("general.keybind.settings", kb_settings);
+        get_kb!("general.keybind.quit", kb_quit);
+        get_kb!("general.keybind.create_tab", kb_create_tab);
+        get_kb!("general.keybind.delete_tab", kb_delete_tab);
+        get_kb!("general.keybind.next_tab", kb_next_tab);
+        get_kb!("general.keybind.prev_tab", kb_prev_tab);
+        get_kb!("general.keybind.back", kb_back);
+        get_kb!("general.keybind.forward", kb_forward);
+        get_kb!("general.keybind.reload", kb_reload);
+        get_kb!("general.keybind.bookmarks", kb_bookmarks);
+        get_kb!("general.keybind.favorite", kb_favorite);
+        get_kb!("general.keybind.open_new_tab", kb_open_new_tab);
 
         for (i, key) in [
-            "global.keybind.favorite_1",
-            "global.keybind.favorite_2",
-            "global.keybind.favorite_3",
-            "global.keybind.favorite_4",
-            "global.keybind.favorite_5",
-            "global.keybind.favorite_6",
-            "global.keybind.favorite_7",
-            "global.keybind.favorite_8",
-            "global.keybind.favorite_9",
-            "global.keybind.favorite_10",
+            "general.keybind.favorite_1",
+            "general.keybind.favorite_2",
+            "general.keybind.favorite_3",
+            "general.keybind.favorite_4",
+            "general.keybind.favorite_5",
+            "general.keybind.favorite_6",
+            "general.keybind.favorite_7",
+            "general.keybind.favorite_8",
+            "general.keybind.favorite_9",
+            "general.keybind.favorite_10",
         ]
         .iter()
         .enumerate()

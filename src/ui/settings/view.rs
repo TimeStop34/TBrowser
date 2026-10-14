@@ -95,10 +95,6 @@ impl SettingsView {
         }
     }
 
-    // ========================================================
-    // Обход дерева
-    // ========================================================
-
     fn flat_visible_nodes(&self) -> Vec<FlatNode> {
         let mut out = Vec::new();
         for node in CATEGORIES.iter() {
@@ -131,7 +127,7 @@ impl SettingsView {
         }
     }
 
-    fn visible_params(&self) -> Vec<&'static ParamDef> {
+    fn visible_params(&self) -> Vec<(&'static ParamDef, String)> {
         let Some(node) = self.current_node() else {
             return Vec::new();
         };
@@ -142,6 +138,7 @@ impl SettingsView {
                 ItemDef::Group(_) => None,
             })
             .filter(|p| (p.active)(&self.settings))
+            .map(|p| (p, full_param_key(node, p)))
             .collect()
     }
 
@@ -183,10 +180,6 @@ impl SettingsView {
             self.active_variant = 0;
         }
     }
-
-    // ========================================================
-    // Навигация
-    // ========================================================
 
     pub fn up(&mut self) {
         self.ensure_active_valid();
@@ -282,63 +275,63 @@ impl SettingsView {
             }
             SettingsColumn::Params => {
                 let params = self.visible_params();
-                let Some(param) = params.get(self.active_param) else {
+                let Some((param, full_key)) = params.get(self.active_param) else {
                     return None;
                 };
                 match param.kind {
                     ParamKind::Bool => {
-                        self.toggle_bool(param.key);
+                        self.toggle_bool(&full_key);
                         None
                     }
                     ParamKind::Enum(_) | ParamKind::Color(_) => {
                         self.column = SettingsColumn::Description;
-                        self.active_variant = self.current_variant_index(param.key);
+                        self.active_variant = self.current_variant_index(&full_key);
                         self.scroll_variants = 0;
                         None
                     }
                     ParamKind::Int => {
-                        let current = match self.settings.get(param.key) {
+                        let current = match self.settings.get(&full_key) {
                             Some(Value::Int(i)) => i.to_string(),
                             _ => "0".to_string(),
                         };
                         Some(EditRequest {
-                            key: param.key.to_string(),
+                            key: full_key.clone(),
                             current,
                             title: param.label.to_string(),
                             kind: EditKind::Int,
                         })
                     }
                     ParamKind::Float => {
-                        let current = match self.settings.get(param.key) {
+                        let current = match self.settings.get(&full_key) {
                             Some(Value::Float(f)) => format!("{}", f),
                             _ => "0.0".to_string(),
                         };
                         Some(EditRequest {
-                            key: param.key.to_string(),
+                            key: full_key.clone(),
                             current,
                             title: param.label.to_string(),
                             kind: EditKind::Float,
                         })
                     }
                     ParamKind::String => {
-                        let current = match self.settings.get(param.key) {
+                        let current = match self.settings.get(&full_key) {
                             Some(Value::Str(s)) => s.clone(),
                             _ => String::new(),
                         };
                         Some(EditRequest {
-                            key: param.key.to_string(),
+                            key: full_key.clone(),
                             current,
                             title: param.label.to_string(),
                             kind: EditKind::String,
                         })
                     }
                     ParamKind::Keybind => {
-                        let current = match self.settings.get(param.key) {
+                        let current = match self.settings.get(&full_key) {
                             Some(Value::Str(s)) => s.clone(),
                             _ => String::new(),
                         };
                         Some(EditRequest {
-                            key: param.key.to_string(),
+                            key: full_key.clone(),
                             current,
                             title: param.label.to_string(),
                             kind: EditKind::Keybind,
@@ -386,10 +379,6 @@ impl SettingsView {
         let _ = self.settings.save();
     }
 
-    // ========================================================
-    // Хелперы
-    // ========================================================
-
     fn has_group_children(node: &NodeDef) -> bool {
         node.children
             .iter()
@@ -408,22 +397,22 @@ impl SettingsView {
 
     fn variants_count(&self) -> Option<usize> {
         let params = self.visible_params();
-        let param = params.get(self.active_param)?;
+        let (param, _) = params.get(self.active_param)?;
         match param.kind {
             ParamKind::Enum(opts) | ParamKind::Color(opts) => Some(opts.len()),
             _ => None,
         }
     }
 
-    fn current_variant_index(&self, key: &str) -> usize {
-        match self.settings.get(key) {
+    fn current_variant_index(&self, full_key: &str) -> usize {
+        match self.settings.get(full_key) {
             Some(Value::EnumIndex(i)) => *i,
             _ => 0,
         }
     }
 
-    fn toggle_bool(&mut self, key: &str) {
-        if let Some(Value::Bool(b)) = self.settings.get_mut(key) {
+    fn toggle_bool(&mut self, full_key: &str) {
+        if let Some(Value::Bool(b)) = self.settings.get_mut(full_key) {
             *b = !*b;
         }
         let _ = self.settings.save();
@@ -431,21 +420,17 @@ impl SettingsView {
 
     fn commit_variant(&mut self) {
         let params = self.visible_params();
-        let Some(param) = params.get(self.active_param) else {
+        let Some((param, full_key)) = params.get(self.active_param) else {
             return;
         };
         if matches!(param.kind, ParamKind::Enum(_) | ParamKind::Color(_)) {
-            if let Some(v) = self.settings.get_mut(param.key) {
+            if let Some(v) = self.settings.get_mut(full_key) {
                 *v = Value::EnumIndex(self.active_variant);
             }
         }
         let _ = self.settings.save();
         self.column = SettingsColumn::Params;
     }
-
-    // ========================================================
-    // Рендер
-    // ========================================================
 
     pub fn render(
         &mut self,
@@ -574,7 +559,7 @@ impl SettingsView {
         buf: &mut Buffer,
         focused: bool,
         theme: &GlobalTheme,
-        params: &[&'static ParamDef],
+        params: &[(&'static ParamDef, String)],
     ) {
         self.render_frame(area, buf, "Parameters", focused, theme);
 
@@ -587,7 +572,7 @@ impl SettingsView {
         let viewport = inner.height as usize;
         let end = (start + viewport).min(params.len());
 
-        for (i, param) in params[start..end].iter().enumerate() {
+        for (i, (param, full_key)) in params[start..end].iter().enumerate() {
             let row = inner.y + i as u16;
             let real_idx = start + i;
             let is_active = real_idx == self.active_param;
@@ -599,7 +584,7 @@ impl SettingsView {
                 Style::default().fg(self.style.item_fg)
             };
 
-            let value_str = self.format_value(param.key, param.kind);
+            let value_str = self.format_value(full_key, param.kind);
             let line = format!(" {}: {}", param.label, value_str);
             let max = inner.width as usize;
             let display: String = line.chars().take(max).collect();
@@ -626,7 +611,7 @@ impl SettingsView {
         buf: &mut Buffer,
         focused: bool,
         theme: &GlobalTheme,
-        params: &[&'static ParamDef],
+        params: &[(&'static ParamDef, String)],
     ) {
         self.render_frame(area, buf, "Description", focused, theme);
 
@@ -635,7 +620,7 @@ impl SettingsView {
             return;
         }
 
-        let Some(param) = params.get(self.active_param) else {
+        let Some((param, full_key)) = params.get(self.active_param) else {
             return;
         };
 
@@ -663,7 +648,7 @@ impl SettingsView {
                 ParamKind::Enum(o) | ParamKind::Color(o) => o,
                 _ => &[],
             };
-            let current = self.current_variant_index(param.key);
+            let current = self.current_variant_index(full_key);
 
             let start = self.scroll_variants as usize;
             let viewport = (inner.y + inner.height).saturating_sub(y) as usize;
@@ -707,7 +692,7 @@ impl SettingsView {
 
     fn variants_viewport(&self, inner: Rect) -> u16 {
         let params = self.visible_params();
-        let Some(param) = params.get(self.active_param) else {
+        let Some((param, _)) = params.get(self.active_param) else {
             return inner.height;
         };
         if !matches!(param.kind, ParamKind::Enum(_) | ParamKind::Color(_)) {
@@ -718,8 +703,8 @@ impl SettingsView {
         inner.height.saturating_sub(desc_lines).saturating_sub(1)
     }
 
-    fn format_value(&self, key: &str, kind: ParamKind) -> String {
-        match (self.settings.get(key), kind) {
+    fn format_value(&self, full_key: &str, kind: ParamKind) -> String {
+        match (self.settings.get(full_key), kind) {
             (Some(Value::Bool(b)), _) => (if *b { "on" } else { "off" }).to_string(),
             (Some(Value::Int(i)), _) => i.to_string(),
             (Some(Value::Float(f)), _) => format!("{}", f),
@@ -735,6 +720,14 @@ impl SettingsView {
 impl Default for SettingsView {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn full_param_key(node: &NodeDef, param: &ParamDef) -> String {
+    if node.key.is_empty() {
+        param.key.to_string()
+    } else {
+        format!("{}.{}", node.key, param.key)
     }
 }
 
@@ -776,69 +769,4 @@ fn clamp_scroll(current: u16, selected: usize, viewport: u16, total: usize) -> u
 
     let max = total.saturating_sub(v);
     s.min(max) as u16
-}
-
-#[allow(unused)]
-fn normalize_keybind(input: &str) -> Option<String> {
-    let s = input.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    // Один символ без '+'
-    if !s.contains('+') {
-        let chars: Vec<char> = s.chars().collect();
-        if chars.len() == 1 {
-            return Some(s.to_string());
-        }
-        return None;
-    }
-
-    let parts: Vec<&str> = s
-        .split('+')
-        .map(|p| p.trim())
-        .filter(|p| !p.is_empty())
-        .collect();
-
-    if parts.len() < 2 {
-        return None;
-    }
-
-    let mut has_ctrl = false;
-    let mut has_shift = false;
-    let mut has_alt = false;
-    let mut key: Option<String> = None;
-
-    for (i, part) in parts.iter().enumerate() {
-        let is_last = i == parts.len() - 1;
-        if is_last {
-            let chars: Vec<char> = part.chars().collect();
-            if chars.len() != 1 {
-                return None;
-            }
-            key = Some((*part).to_string());
-        } else {
-            match part.to_lowercase().as_str() {
-                "ctrl" | "control" => has_ctrl = true,
-                "shift" => has_shift = true,
-                "alt" => has_alt = true,
-                _ => return None,
-            }
-        }
-    }
-
-    let key = key?;
-
-    let mut out = String::new();
-    if has_ctrl {
-        out.push_str("Ctrl+");
-    }
-    if has_shift {
-        out.push_str("Shift+");
-    }
-    if has_alt {
-        out.push_str("Alt+");
-    }
-    out.push_str(&key);
-    Some(out)
 }

@@ -3,7 +3,7 @@ use crate::core::settings::{DefaultValue, def::{
 }, general::keybind::NODE_KEYBIND};
 
 static P_HOMEPAGE: ParamDef = ParamDef {
-    key: "general.homepage",
+    key: "homepage",
     label: "Homepage",
     description: "The URL loaded at the start of the application.",
     kind: ParamKind::String,
@@ -12,7 +12,7 @@ static P_HOMEPAGE: ParamDef = ParamDef {
 };
 
 static P_MAX_TABS: ParamDef = ParamDef {
-    key: "general.max_tabs",
+    key: "max_tabs",
     label: "Max tabs",
     description: "The maximum number of simultaneously open tabs.",
     kind: ParamKind::Int,
@@ -21,7 +21,7 @@ static P_MAX_TABS: ParamDef = ParamDef {
 };
 
 static P_AUTOLOAD_IMAGES: ParamDef = ParamDef {
-    key: "general.autoload_images",
+    key: "autoload_images",
     label: "Autoload images",
     description: "Automatically load images when the page is opened",
     kind: ParamKind::Bool,

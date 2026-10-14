@@ -22,7 +22,7 @@ pub const COLORS: &[&'static str] = &[
 ];
 
 pub static P_ACCENT: ParamDef = ParamDef {
-    key: "theme.accent",
+    key: "accent",
     label: "Accent color",
     description: "Accent color of the interface.",
     kind: ParamKind::Color(COLORS),
@@ -31,7 +31,7 @@ pub static P_ACCENT: ParamDef = ParamDef {
 };
 
 static P_SELECTED_TAB_COLOR: ParamDef = ParamDef {
-    key: "theme.selected_tab_color",
+    key: "selected_tab_color",
     label: "Selected tab color",
     description: "The color of the selected tab in the tab menu.",
     kind: ParamKind::Color(COLORS),

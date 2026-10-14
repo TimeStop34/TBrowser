@@ -16,9 +16,20 @@ use crate::core::renderer::code::get_code_renderer;
 use crate::core::renderer::meta::{
     FieldValue, ImageState, InteractiveFieldKind, LineMeta, Link, RenderState, RenderedContent,
 };
-use crate::core::renderer::theme::RendererTheme;
+use crate::core::renderer::tmkup_theme::TmkupTheme;
+use crate::core::settings::Settings;
 
-pub struct TmkupRenderer;
+pub struct TmkupRenderer {
+    theme: TmkupTheme,
+}
+
+impl TmkupRenderer {
+    pub fn new(settings: &Settings) -> Self {
+        Self {
+            theme: TmkupTheme::from_settings(settings),
+        }
+    }
+}
 
 struct Out {
     lines: Vec<Line<'static>>,
@@ -59,12 +70,19 @@ impl Renderer for TmkupRenderer {
         &self,
         doc: &Document,
         base_url: &str,
-        _theme: &dyn RendererTheme,
         viewport_width: u16,
         state: &RenderState,
     ) -> Result<RenderedContent> {
         let mut out = Out::new();
-        render_children(doc, doc.root(), &mut out, viewport_width, state, base_url);
+        render_children(
+            doc,
+            doc.root(),
+            &mut out,
+            viewport_width,
+            state,
+            base_url,
+            &self.theme,
+        );
         Ok(RenderedContent::new(Text::from(out.lines), out.meta))
     }
 }
@@ -100,9 +118,10 @@ fn render_children(
     vw: u16,
     state: &RenderState,
     base_url: &str,
+    theme: &TmkupTheme,
 ) {
     for (id, node) in doc.children(parent) {
-        render_node(doc, id, node, out, vw, state, base_url);
+        render_node(doc, id, node, out, vw, state, base_url, theme);
     }
 }
 
@@ -114,6 +133,7 @@ fn render_node(
     vw: u16,
     state: &RenderState,
     base_url: &str,
+    theme: &TmkupTheme,
 ) {
     match node {
         NodeData::Root => {}
@@ -124,7 +144,7 @@ fn render_node(
             } else {
                 let links = collect_links(spans, base_url);
                 out.push(
-                    Line::from(spans_to_ratatui(spans)),
+                    Line::from(spans_to_ratatui(spans, theme)),
                     LineMeta::with_links(links),
                 );
             }
@@ -132,7 +152,7 @@ fn render_node(
 
         NodeData::Heading { spans, .. } => {
             let style = Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.heading_fg)
                 .add_modifier(Modifier::BOLD);
             let rat: Vec<RatSpan<'static>> = spans
                 .iter()
@@ -153,7 +173,7 @@ fn render_node(
             let prefix = format!("{}{} ", "  ".repeat(*indent as usize), m);
             let links = collect_links(spans, base_url);
             let mut rat = vec![RatSpan::raw(prefix)];
-            rat.extend(spans_to_ratatui(spans));
+            rat.extend(spans_to_ratatui(spans, theme));
             out.push(Line::from(rat), LineMeta::with_links(links));
         }
 
@@ -204,30 +224,29 @@ fn render_node(
             let frame = build_frame(
                 &result.label,
                 &content,
-                Color::White,
+                theme.border_fg,
                 result.bg,
                 result.fg,
                 FrameBorder::Rounded,
                 None,
+                theme,
             );
             out.extend_normal(frame);
         }
 
-        NodeData::Image { alt, .. } => {
-            match state.images.get(&id) {
-                Some(ImageState::Ready(lines)) => {
-                    for line in lines {
-                        out.push_normal(line.clone());
-                    }
-                }
-                Some(ImageState::Failed(err)) => {
-                    out.push_normal(Line::from(format!("[{}] (Error: {})", alt, err)));
-                }
-                Some(ImageState::Loading) | None => {
-                    out.push_normal(Line::from(format!("[{}]", alt)));
+        NodeData::Image { alt, .. } => match state.images.get(&id) {
+            Some(ImageState::Ready(lines)) => {
+                for line in lines {
+                    out.push_normal(line.clone());
                 }
             }
-        }
+            Some(ImageState::Failed(err)) => {
+                out.push_normal(Line::from(format!("[{}] (Error: {})", alt, err)));
+            }
+            Some(ImageState::Loading) | None => {
+                out.push_normal(Line::from(format!("[{}]", alt)));
+            }
+        },
 
         NodeData::BlockQuote { cite, date } => {
             let mut content: Vec<Vec<Span>> = Vec::new();
@@ -260,21 +279,22 @@ fn render_node(
             let frame = build_frame(
                 "",
                 &content,
-                Color::White,
-                Color::White,
+                theme.quote_fg,
+                theme.quote_fg,
                 Color::Black,
                 FrameBorder::Left,
                 None,
+                theme,
             );
             out.extend_normal(frame);
         }
 
         NodeData::InfoBlock { kind } => {
             let (label, color) = match kind {
-                InfoKind::Info => ("INFO", Color::Blue),
-                InfoKind::Warning => ("WARN", Color::Yellow),
-                InfoKind::Success => (" OK ", Color::Green),
-                InfoKind::Error => ("ERR ", Color::Red),
+                InfoKind::Info => ("INFO", theme.info_fg),
+                InfoKind::Warning => ("WARN", theme.warning_fg),
+                InfoKind::Success => (" OK ", theme.success_fg),
+                InfoKind::Error => ("ERR ", theme.error_fg),
             };
             let mut content: Vec<Vec<Span>> = Vec::new();
             for (_, child) in doc.children(id) {
@@ -290,6 +310,7 @@ fn render_node(
                 Color::White,
                 FrameBorder::Rounded,
                 Some(color),
+                theme,
             );
             out.extend_normal(frame);
         }
@@ -313,6 +334,7 @@ fn render_node(
                 Color::Black,
                 border_style,
                 Some(*color),
+                theme,
             );
             out.extend_normal(frame);
         }
@@ -338,11 +360,12 @@ fn render_node(
             let frame = build_frame(
                 "SPOILER",
                 &content,
-                Color::White,
-                Color::White,
+                theme.spoiler_fg,
+                theme.spoiler_fg,
                 Color::Black,
                 FrameBorder::Rounded,
                 None,
+                theme,
             );
 
             for (i, line) in frame.into_iter().enumerate() {
@@ -363,14 +386,20 @@ fn render_node(
         }
 
         NodeData::Form { items, .. } => {
-            render_form(id, items, out, state);
+            render_form(id, items, out, state, theme);
         }
 
         NodeData::GopherBlock { .. } => {}
     }
 }
 
-fn render_form(form_id: NodeId, items: &[FormItem], out: &mut Out, state: &RenderState) {
+fn render_form(
+    form_id: NodeId,
+    items: &[FormItem],
+    out: &mut Out,
+    state: &RenderState,
+    theme: &TmkupTheme,
+) {
     let mut content: Vec<Vec<Span>> = Vec::new();
     let mut metas: Vec<LineMeta> = Vec::new();
     let mut field_index = 0usize;
@@ -393,11 +422,12 @@ fn render_form(form_id: NodeId, items: &[FormItem], out: &mut Out, state: &Rende
     let frame = build_frame(
         " FORM ",
         &content,
-        Color::White,
-        Color::White,
+        theme.border_fg,
+        theme.border_fg,
         Color::Black,
         FrameBorder::Rounded,
         None,
+        theme,
     );
 
     let total = frame.len();
@@ -434,13 +464,14 @@ fn build_frame(
     label_fg: Color,
     border: FrameBorder,
     content_fg: Option<Color>,
+    theme: &TmkupTheme,
 ) -> Vec<Line<'static>> {
     if matches!(border, FrameBorder::Left) {
         let mut out = Vec::new();
         for spans in content {
             let mut rat = vec![RatSpan::styled("┃ ", Style::default().fg(border_color))];
             for s in spans {
-                let mut style = span_style(s);
+                let mut style = span_style(s, theme);
                 if s.style.fg.is_none() {
                     if let Some(fg) = content_fg {
                         style = style.fg(fg);
@@ -496,7 +527,7 @@ fn build_frame(
         rat.push(RatSpan::styled("│   ".to_string(), border_style));
         let mut used = 0usize;
         for s in spans {
-            let mut style = span_style(s);
+            let mut style = span_style(s, theme);
             if s.style.fg.is_none() {
                 if let Some(fg) = content_fg {
                     style = style.fg(fg);
@@ -790,15 +821,11 @@ fn field_to_lines(
             let is_open = state.select_open.contains(&key);
 
             if is_open {
-                let mut lines =
-                    vec![vec![Span::raw(format!("[ {} ▲ ]", selected))]];
+                let mut lines = vec![vec![Span::raw(format!("[ {} ▲ ]", selected))]];
                 let mut metas = vec![LineMeta::form_select_header(form_id, field_index)];
                 for (i, opt) in options.iter().enumerate() {
                     let marker = if i == selected_idx { ">" } else { " " };
-                    lines.push(vec![Span::raw(format!(
-                        "  {} {}",
-                        marker, opt.label
-                    ))]);
+                    lines.push(vec![Span::raw(format!("  {} {}", marker, opt.label))]);
                     metas.push(LineMeta::form_select_option(form_id, field_index, i));
                 }
                 (lines, metas)
@@ -833,14 +860,14 @@ fn field_to_lines(
     }
 }
 
-fn spans_to_ratatui(spans: &[Span]) -> Vec<RatSpan<'static>> {
+fn spans_to_ratatui(spans: &[Span], theme: &TmkupTheme) -> Vec<RatSpan<'static>> {
     spans
         .iter()
-        .map(|s| RatSpan::styled(sanitize(&s.text), span_style(s)))
+        .map(|s| RatSpan::styled(sanitize(&s.text), span_style(s, theme)))
         .collect()
 }
 
-fn span_style(s: &Span) -> Style {
+fn span_style(s: &Span, theme: &TmkupTheme) -> Style {
     let mut st = Style::default();
     if s.style.bold {
         st = st.add_modifier(Modifier::BOLD);
@@ -861,7 +888,7 @@ fn span_style(s: &Span) -> Style {
         st = st.add_modifier(Modifier::REVERSED);
     }
     if s.style.code {
-        st = st.fg(Color::Yellow);
+        st = st.fg(theme.code_fg);
     }
     if let Some(fg) = s.style.fg {
         st = st.fg(fg);
@@ -870,7 +897,7 @@ fn span_style(s: &Span) -> Style {
         st = st.bg(bg);
     }
     if s.link.is_some() && s.style.fg.is_none() {
-        st = st.fg(Color::Blue).add_modifier(Modifier::UNDERLINED);
+        st = st.fg(theme.link_fg).add_modifier(Modifier::UNDERLINED);
     }
     st
 }

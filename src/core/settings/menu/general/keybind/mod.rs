@@ -1,7 +1,7 @@
 use crate::core::{ItemDef, NodeDef, ParamDef, ParamKind, settings::{DefaultValue, always_active}};
 
 static P_KB_INFO: ParamDef = ParamDef {
-    key: "global.keybind.info",
+    key: "info",
     label: "Info key",
     description: "Key to open Info sidebar",
     kind: ParamKind::Keybind,
@@ -10,7 +10,7 @@ static P_KB_INFO: ParamDef = ParamDef {
 };
 
 static P_KB_TABS: ParamDef = ParamDef {
-    key: "global.keybind.tabs",
+    key: "tabs",
     label: "Tabs key",
     description: "Key to open Tabs sidebar",
     kind: ParamKind::Keybind,
@@ -19,7 +19,7 @@ static P_KB_TABS: ParamDef = ParamDef {
 };
 
 static P_KB_BOOKMARKS: ParamDef = ParamDef {
-    key: "global.keybind.bookmarks",
+    key: "bookmarks",
     label: "Bookmarks key",
     description: "Key to open Bookmarks sidebar",
     kind: ParamKind::Keybind,
@@ -28,7 +28,7 @@ static P_KB_BOOKMARKS: ParamDef = ParamDef {
 };
 
 static P_KB_SETTINGS: ParamDef = ParamDef {
-    key: "global.keybind.settings",
+    key: "settings",
     label: "Settings key",
     description: "Key to open settings",
     kind: ParamKind::Keybind,
@@ -37,7 +37,7 @@ static P_KB_SETTINGS: ParamDef = ParamDef {
 };
 
 static P_KB_QUIT: ParamDef = ParamDef {
-    key: "global.keybind.quit",
+    key: "quit",
     label: "Quit key",
     description: "Key to quit",
     kind: ParamKind::Keybind,
@@ -46,7 +46,7 @@ static P_KB_QUIT: ParamDef = ParamDef {
 };
 
 static P_KB_CREATE_TAB: ParamDef = ParamDef {
-    key: "global.keybind.create_tab",
+    key: "create_tab",
     label: "Create tab key",
     description: "Key to create new tab or add bookmark",
     kind: ParamKind::Keybind,
@@ -55,7 +55,7 @@ static P_KB_CREATE_TAB: ParamDef = ParamDef {
 };
 
 static P_KB_DELETE_TAB: ParamDef = ParamDef {
-    key: "global.keybind.delete_tab",
+    key: "delete_tab",
     label: "Delete tab key",
     description: "Key to delete current tab or selected bookmark",
     kind: ParamKind::Keybind,
@@ -64,7 +64,7 @@ static P_KB_DELETE_TAB: ParamDef = ParamDef {
 };
 
 static P_DELETE_HINT: ParamDef = ParamDef {
-    key: "global.keybind.delete_hint",
+    key: "delete_hint",
     label: "Delete confirmation",
     description: "Show a confirmation dialog before deleting a tab.",
     kind: ParamKind::Bool,
@@ -73,7 +73,7 @@ static P_DELETE_HINT: ParamDef = ParamDef {
 };
 
 static P_KB_NEXT_TAB: ParamDef = ParamDef {
-    key: "global.keybind.next_tab",
+    key: "next_tab",
     label: "Next tab key",
     description: "Key to switch to the next tab (or shift favorite up)",
     kind: ParamKind::Keybind,
@@ -82,7 +82,7 @@ static P_KB_NEXT_TAB: ParamDef = ParamDef {
 };
 
 static P_KB_PREV_TAB: ParamDef = ParamDef {
-    key: "global.keybind.prev_tab",
+    key: "prev_tab",
     label: "Prev tab key",
     description: "Key to switch to the previous tab (or shift favorite down)",
     kind: ParamKind::Keybind,
@@ -91,7 +91,7 @@ static P_KB_PREV_TAB: ParamDef = ParamDef {
 };
 
 static P_KB_BACK: ParamDef = ParamDef {
-    key: "global.keybind.back",
+    key: "back",
     label: "Back key",
     description: "Key to navigate back in tab history",
     kind: ParamKind::Keybind,
@@ -100,7 +100,7 @@ static P_KB_BACK: ParamDef = ParamDef {
 };
 
 static P_KB_FORWARD: ParamDef = ParamDef {
-    key: "global.keybind.forward",
+    key: "forward",
     label: "Forward key",
     description: "Key to navigate forward in tab history",
     kind: ParamKind::Keybind,
@@ -109,7 +109,7 @@ static P_KB_FORWARD: ParamDef = ParamDef {
 };
 
 static P_KB_RELOAD: ParamDef = ParamDef {
-    key: "global.keybind.reload",
+    key: "reload",
     label: "Reload key",
     description: "Key to reload the current page",
     kind: ParamKind::Keybind,
@@ -118,7 +118,7 @@ static P_KB_RELOAD: ParamDef = ParamDef {
 };
 
 static P_KB_FAVORITE: ParamDef = ParamDef {
-    key: "global.keybind.favorite",
+    key: "favorite",
     label: "Favorite key",
     description: "Key to make the current page a favorite (bookmark slot 1-10)",
     kind: ParamKind::Keybind,
@@ -127,12 +127,12 @@ static P_KB_FAVORITE: ParamDef = ParamDef {
 };
 
 static P_KB_OPEN_NEW_TAB: ParamDef = ParamDef {
-    key: "global.keybind.open_new_tab",
-    label: "Open link in a new tab",
-    description: "Key to open link in a new tab",
+    key: "open_new_tab",
+    label: "Open in new tab",
+    description: "Key to open the selected link in a new tab",
     kind: ParamKind::Keybind,
     active: always_active,
-    default: DefaultValue::Str(" "),
+    default: DefaultValue::Str("Ctrl+Enter"),
 };
 
 macro_rules! fav_param {
@@ -148,16 +148,16 @@ macro_rules! fav_param {
     };
 }
 
-fav_param!(P_KB_FAV_1, "global.keybind.favorite_1", "Favorite 1", "1");
-fav_param!(P_KB_FAV_2, "global.keybind.favorite_2", "Favorite 2", "2");
-fav_param!(P_KB_FAV_3, "global.keybind.favorite_3", "Favorite 3", "3");
-fav_param!(P_KB_FAV_4, "global.keybind.favorite_4", "Favorite 4", "4");
-fav_param!(P_KB_FAV_5, "global.keybind.favorite_5", "Favorite 5", "5");
-fav_param!(P_KB_FAV_6, "global.keybind.favorite_6", "Favorite 6", "6");
-fav_param!(P_KB_FAV_7, "global.keybind.favorite_7", "Favorite 7", "7");
-fav_param!(P_KB_FAV_8, "global.keybind.favorite_8", "Favorite 8", "8");
-fav_param!(P_KB_FAV_9, "global.keybind.favorite_9", "Favorite 9", "9");
-fav_param!(P_KB_FAV_10, "global.keybind.favorite_10", "Favorite 10", "0");
+fav_param!(P_KB_FAV_1, "favorite_1", "Favorite 1", "1");
+fav_param!(P_KB_FAV_2, "favorite_2", "Favorite 2", "2");
+fav_param!(P_KB_FAV_3, "favorite_3", "Favorite 3", "3");
+fav_param!(P_KB_FAV_4, "favorite_4", "Favorite 4", "4");
+fav_param!(P_KB_FAV_5, "favorite_5", "Favorite 5", "5");
+fav_param!(P_KB_FAV_6, "favorite_6", "Favorite 6", "6");
+fav_param!(P_KB_FAV_7, "favorite_7", "Favorite 7", "7");
+fav_param!(P_KB_FAV_8, "favorite_8", "Favorite 8", "8");
+fav_param!(P_KB_FAV_9, "favorite_9", "Favorite 9", "9");
+fav_param!(P_KB_FAV_10, "favorite_10", "Favorite 10", "0");
 
 const KEYBIND_CHILDREN: &[ItemDef] = &[
     ItemDef::Param(&P_KB_INFO),
@@ -171,7 +171,6 @@ const KEYBIND_CHILDREN: &[ItemDef] = &[
     ItemDef::Param(&P_KB_BACK),
     ItemDef::Param(&P_KB_FORWARD),
     ItemDef::Param(&P_KB_RELOAD),
-    ItemDef::Param(&P_KB_OPEN_NEW_TAB),
     ItemDef::Param(&P_KB_FAVORITE),
     ItemDef::Param(&P_KB_FAV_1),
     ItemDef::Param(&P_KB_FAV_2),
@@ -183,12 +182,13 @@ const KEYBIND_CHILDREN: &[ItemDef] = &[
     ItemDef::Param(&P_KB_FAV_8),
     ItemDef::Param(&P_KB_FAV_9),
     ItemDef::Param(&P_KB_FAV_10),
+    ItemDef::Param(&P_KB_OPEN_NEW_TAB),
     ItemDef::Param(&P_KB_SETTINGS),
     ItemDef::Param(&P_KB_QUIT),
 ];
 
 pub static NODE_KEYBIND: NodeDef = NodeDef {
-    key: "global.keybind",
+    key: "general.keybind",
     label: "Keybinds",
     active: always_active,
     children: KEYBIND_CHILDREN,

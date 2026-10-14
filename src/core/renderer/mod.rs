@@ -10,10 +10,13 @@ mod tmkup;
 #[allow(unused)]
 pub use tmkup::*;
 
+pub mod tmkup_theme;
+
 mod factory;
 pub use factory::*;
 
 mod theme;
+#[allow(unused)]
 pub use theme::*;
 
 pub mod code;

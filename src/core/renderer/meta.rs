@@ -26,6 +26,7 @@ pub enum InteractiveFieldKind {
 
 #[derive(Debug, Clone)]
 pub enum ImageState {
+    #[allow(unused)]
     Loading,
     Ready(Vec<Line<'static>>),
     Failed(String),

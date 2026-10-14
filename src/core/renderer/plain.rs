@@ -4,7 +4,6 @@ use ratatui::text::{Line, Text};
 use crate::core::document::{Document, NodeData};
 use crate::core::renderer::base::Renderer;
 use crate::core::renderer::meta::{LineMeta, RenderState, RenderedContent};
-use crate::core::renderer::theme::RendererTheme;
 
 pub struct PlainRenderer;
 
@@ -18,7 +17,6 @@ impl Renderer for PlainRenderer {
         &self,
         doc: &Document,
         _base_url: &str,
-        _theme: &dyn RendererTheme,
         _viewport_width: u16,
         _state: &RenderState,
     ) -> anyhow::Result<RenderedContent> {

@@ -171,10 +171,10 @@ pub struct GlobalTheme {
 
 impl GlobalTheme {
     pub fn from_settings(s: &Settings) -> Self {
-        let accent = get_color(s, "theme.accent", Color::Cyan);
-        let selected_tab_color = get_color(s, "theme.selected_tab_color", Color::Green);
+        let accent = get_color(s, "appearance.accent", Color::Cyan);
+        let selected_tab_color = get_color(s, "appearance.selected_tab_color", Color::Green);
 
-        let border_set = match get_index(s, "theme.border_style") {
+        let border_set = match get_index(s, "appearance.layout.border_style") {
             0 => BorderSet::SINGLE,
             1 => BorderSet::DOUBLE,
             2 => BorderSet::ROUNDED,
@@ -182,54 +182,54 @@ impl GlobalTheme {
             _ => BorderSet::SINGLE,
         };
 
-        let btn_fmt = get_string(s, "theme.btn_format", "[ {} ]");
-        let title_fmt = get_string(s, "theme.title_format", " {} ");
+        let btn_fmt = get_string(s, "appearance.layout.btn_format", "[ {} ]");
+        let title_fmt = get_string(s, "appearance.layout.title_format", " {} ");
 
         let border_fg = resolve_color_type(
             s,
-            "theme.borders_color_type",
-            "theme.borders_color",
+            "appearance.interface.borders_color_type",
+            "appearance.fg_colors.borders_color",
             accent,
         );
         let selected_bg = resolve_color_type(
             s,
-            "theme.selected_btn_bg_type",
-            "theme.selected_btn_bg_color",
+            "appearance.interface.selected_btn_bg_type",
+            "appearance.bg_colors.selected_btn_bg_color",
             accent,
         );
         let header_bg = resolve_color_type(
             s,
-            "theme.header_bg_type",
-            "theme.header_bg_color",
+            "appearance.interface.header_bg_type",
+            "appearance.bg_colors.header_bg_color",
             accent,
         );
         let selection_bg = resolve_color_type(
             s,
-            "theme.selection_bg_type",
-            "theme.selection_bg_color",
+            "appearance.interface.selection_bg_type",
+            "appearance.bg_colors.selection_bg_color",
             accent,
         );
         let url_bar_color = resolve_color_type(
             s,
-            "theme.url_bar_color_type",
-            "theme.url_bar_color",
+            "appearance.interface.url_bar_color_type",
+            "appearance.fg_colors.url_bar_color",
             accent,
         );
         let scrollbar_color = resolve_color_type(
             s,
-            "theme.scrollbar_color_type",
-            "theme.scrollbar_color",
+            "appearance.interface.scrollbar_color_type",
+            "appearance.fg_colors.scrollbar_color",
             accent,
         );
         let keybind_hint_bg = resolve_color_type(
             s,
-            "theme.keybind_hint_bg_type",
-            "theme.keybind_hint_bg",
+            "appearance.interface.keybind_hint_bg_type",
+            "appearance.bg_colors.keybind_hint_bg",
             accent,
         );
-        let keybind_hint_format = get_string(s, "theme.keybind_hint_format", "< {} >");
+        let keybind_hint_format = get_string(s, "appearance.layout.keybind_hint_format", "< {} >");
         let keybind_hint_duration_ms =
-            (get_float(s, "theme.keybind_hint_duration", 1.0).max(0.0) * 1000.0) as u64;
+            (get_float(s, "appearance.layout.keybind_hint_duration", 1.0).max(0.0) * 1000.0) as u64;
 
         Self {
             accent,

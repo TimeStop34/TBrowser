@@ -1,8 +1,36 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+
+pub const CONFIG_VERSION: u32 = 1;
+pub const TBROWSER_VERSION: &str = env!("CARGO_PKG_VERSION");
+const HEADER: &str = "# TBrowser settings configuration\n\n";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Metadata {
+    pub version: u32,
+    pub tbrowser_version: String,
+}
+
+impl Default for Metadata {
+    fn default() -> Self {
+        Self {
+            version: CONFIG_VERSION,
+            tbrowser_version: TBROWSER_VERSION.to_string(),
+        }
+    }
+}
+
+impl Metadata {
+    pub fn legacy() -> Self {
+        Self {
+            version: 0,
+            tbrowser_version: String::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "value")]
@@ -78,12 +106,15 @@ pub enum ItemDef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default = "Metadata::legacy")]
+    pub metadata: Metadata,
     pub values: HashMap<String, Value>,
 }
 
 impl Settings {
     pub fn new() -> Self {
         Self {
+            metadata: Metadata::default(),
             values: collect_defaults(),
         }
     }
@@ -93,18 +124,63 @@ impl Settings {
         Some(PathBuf::from(home).join(".config/tbrowser/settings.toml"))
     }
 
+    pub fn backup_path() -> Option<PathBuf> {
+        Some(Self::config_path()?.with_extension("toml.backup"))
+    }
+
     pub fn load() -> Self {
         let Some(path) = Self::config_path() else {
             return Self::new();
         };
-        let mut settings = match std::fs::read_to_string(&path) {
-            Ok(s) => toml::from_str::<Settings>(&s).unwrap_or_else(|_| Self::new()),
-            Err(_) => Self::new(),
+
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => {
+                let s = Self::new();
+                let _ = s.save();
+                return s;
+            }
         };
+
+        let mut settings: Settings = match toml::from_str(&raw) {
+            Ok(s) => s,
+            Err(_) => return Self::reset_with_backup(&path),
+        };
+
+        let from = settings.metadata.version;
+
+        if from == CONFIG_VERSION {
+            settings.metadata.tbrowser_version = TBROWSER_VERSION.to_string();
+            Self::fill_missing(&mut settings);
+            return settings;
+        }
+
+        if from < CONFIG_VERSION
+            && crate::core::settings::migration::migrate(from, &mut settings)
+        {
+            settings.metadata.version = CONFIG_VERSION;
+            settings.metadata.tbrowser_version = TBROWSER_VERSION.to_string();
+            Self::fill_missing(&mut settings);
+            let _ = settings.save();
+            return settings;
+        }
+
+        Self::reset_with_backup(&path)
+    }
+
+    fn fill_missing(settings: &mut Settings) {
         for (k, v) in collect_defaults() {
             settings.values.entry(k).or_insert(v);
         }
-        settings
+    }
+
+    fn reset_with_backup(path: &Path) -> Self {
+        if let Some(bp) = Self::backup_path() {
+            let _ = std::fs::copy(path, &bp);
+        }
+        let s = Self::new();
+        let _ = s.save();
+        s
     }
 
     pub fn save(&self) -> Result<()> {
@@ -114,8 +190,9 @@ impl Settings {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let s = toml::to_string_pretty(self)?;
-        std::fs::write(&path, s)?;
+        let mut out = String::from(HEADER);
+        out.push_str(&toml::to_string_pretty(self)?);
+        std::fs::write(&path, out)?;
         Ok(())
     }
 
@@ -146,7 +223,12 @@ fn collect_node(node: &NodeDef, out: &mut HashMap<String, Value>) {
     for child in node.children {
         match child {
             ItemDef::Param(p) => {
-                out.insert(p.key.to_string(), p.default.to_value());
+                let full = if node.key.is_empty() {
+                    p.key.to_string()
+                } else {
+                    format!("{}.{}", node.key, p.key)
+                };
+                out.insert(full, p.default.to_value());
             }
             ItemDef::Group(g) => collect_node(g, out),
         }
