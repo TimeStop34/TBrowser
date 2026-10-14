@@ -124,10 +124,6 @@ impl Settings {
         Some(PathBuf::from(home).join(".config/tbrowser/settings.toml"))
     }
 
-    pub fn backup_path() -> Option<PathBuf> {
-        Some(Self::config_path()?.with_extension("toml.backup"))
-    }
-
     pub fn load() -> Self {
         let Some(path) = Self::config_path() else {
             return Self::new();
@@ -144,7 +140,7 @@ impl Settings {
 
         let mut settings: Settings = match toml::from_str(&raw) {
             Ok(s) => s,
-            Err(_) => return Self::reset_with_backup(&path),
+            Err(_) => return Self::reset_with_backup(&path, 0),
         };
 
         let from = settings.metadata.version;
@@ -155,9 +151,7 @@ impl Settings {
             return settings;
         }
 
-        if from < CONFIG_VERSION
-            && crate::core::settings::migration::migrate(from, &mut settings)
-        {
+        if crate::core::settings::migration::migrate(from, &mut settings) {
             settings.metadata.version = CONFIG_VERSION;
             settings.metadata.tbrowser_version = TBROWSER_VERSION.to_string();
             Self::fill_missing(&mut settings);
@@ -165,7 +159,7 @@ impl Settings {
             return settings;
         }
 
-        Self::reset_with_backup(&path)
+        Self::reset_with_backup(&path, from)
     }
 
     fn fill_missing(settings: &mut Settings) {
@@ -174,10 +168,10 @@ impl Settings {
         }
     }
 
-    fn reset_with_backup(path: &Path) -> Self {
-        if let Some(bp) = Self::backup_path() {
-            let _ = std::fs::copy(path, &bp);
-        }
+    fn reset_with_backup(path: &Path, from: u32) -> Self {
+        let bp = path.with_extension(format!("toml.v{}.backup", from));
+        let _ = std::fs::copy(path, &bp);
+
         let s = Self::new();
         let _ = s.save();
         s
