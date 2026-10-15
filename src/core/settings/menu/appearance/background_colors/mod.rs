@@ -1,4 +1,5 @@
-use crate::{core::{ParamDef, ParamKind, Value, settings::{DefaultValue, appearance::COLORS, def::{
+use crate::core::settings::colors::COLOR_NAMES;
+use crate::{core::{ParamDef, ParamKind, Value, settings::{DefaultValue, def::{
     ItemDef, NodeDef,
 }, when_x_value}}};
 
@@ -6,36 +7,36 @@ static P_SELECTION_BG_COLOR: ParamDef = ParamDef {
     key: "selection_bg_color",
     label: "Selection background color",
     description: "Background color of the selection",
-    kind: ParamKind::Enum(COLORS),
+    kind: ParamKind::Enum(COLOR_NAMES),
     active: |s| when_x_value(s, "appearance.interface.selection_bg_type".to_string(), &Value::EnumIndex(2)),
-    default: DefaultValue::EnumIndex(0)
+    default: DefaultValue::EnumIndex(15), // White
 };
 
 static P_HEADER_BG_COLOR: ParamDef = ParamDef {
     key: "header_bg_color",
     label: "Header background color",
     description: "Background color of the header",
-    kind: ParamKind::Enum(COLORS),
+    kind: ParamKind::Enum(COLOR_NAMES),
     active: |s| when_x_value(s, "appearance.interface.header_bg_type".to_string(), &Value::EnumIndex(2)),
-    default: DefaultValue::EnumIndex(0)
+    default: DefaultValue::EnumIndex(15), // White
 };
 
 static P_SELECTED_BTN_BG_COLOR: ParamDef = ParamDef {
     key: "selected_btn_bg_color",
     label: "Selected buttons background color",
     description: "Background color of the selected buttons",
-    kind: ParamKind::Enum(COLORS),
+    kind: ParamKind::Enum(COLOR_NAMES),
     active: |s| when_x_value(s, "appearance.interface.selected_btn_bg_type".to_string(), &Value::EnumIndex(2)),
-    default: DefaultValue::EnumIndex(0)
+    default: DefaultValue::EnumIndex(15), // White
 };
 
 static P_KEYBIND_HINT_BG: ParamDef = ParamDef {
     key: "keybind_hint_bg",
     label: "Keybind hint bg",
     description: "Background color for the keybind hint overlay (when type is Custom).",
-    kind: ParamKind::Color(COLORS),
+    kind: ParamKind::Color(COLOR_NAMES),
     active: |s| when_x_value(s, "appearance.interface.keybind_hint_bg_type".to_string(), &Value::EnumIndex(2)),
-    default: DefaultValue::EnumIndex(0),
+    default: DefaultValue::EnumIndex(15), // White
 };
 
 pub static NODE_BGCOLORS: NodeDef = NodeDef {

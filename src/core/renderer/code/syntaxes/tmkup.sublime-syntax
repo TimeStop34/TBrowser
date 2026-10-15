@@ -1,0 +1,361 @@
+%YAML 1.2
+---
+name: TMkUp
+file_extensions:
+  - tmkup
+  - tmk
+scope: source.tmkup
+
+contexts:
+  main:
+    - include: metadata
+    - include: code-block
+    - include: comments
+    - include: gopher-directive
+    - include: info-block
+    - include: color-block
+    - include: spoiler
+    - include: form
+    - include: radio
+    - include: select
+    - include: horizontal-rule
+    - include: headers
+    - include: quote
+    - include: table
+    - include: list
+    - include: footnote-definition
+    - include: footnote-ref
+    - include: image
+    - include: link
+    - include: form-field
+    - include: variables
+    - include: inline-code
+    - include: ansi-color
+    - include: styles
+
+  # ----- METADATA ------------------------------------------------
+  metadata:
+    - match: '^(---tmk-meta)\s*$'
+      captures:
+        1: punctuation.definition.metadata.begin.tmkup
+      push:
+        - meta_scope: meta.block.metadata.tmkup
+        - match: '^(---tmk-meta)\s*$'
+          captures:
+            1: punctuation.definition.metadata.end.tmkup
+          pop: true
+        - match: '^(\s*)([\w-]+)(:)\s*(.*)$'
+          captures:
+            2: entity.name.tag.metadata.tmkup
+            3: punctuation.separator.key-value.tmkup
+            4: string.unquoted.metadata.tmkup
+
+  # ----- COMMENTS -------------------------------------------------
+  comments:
+    - match: '//.*$'
+      scope: comment.line.double-slash.tmkup
+    - match: '/\*'
+      push:
+        - meta_scope: comment.block.tmkup
+        - match: '\*/'
+          pop: true
+
+  # ----- CODE BLOCK -----------------------------------------------
+  code-block:
+    - match: '^(\s*)(```)(\w*)\s*$'
+      captures:
+        2: punctuation.definition.code.begin.tmkup
+        3: fenced_code.block.language.tmkup
+      push:
+        - meta_scope: markup.fenced_code.block.tmkup
+        - match: '^(\s*)(```)\s*$'
+          captures:
+            2: punctuation.definition.code.end.tmkup
+          pop: true
+
+  # ----- INLINE CODE ----------------------------------------------
+  inline-code:
+    - match: '(`)([^`\n]+)(`)'
+      captures:
+        1: punctuation.definition.raw.begin.tmkup
+        2: markup.inline.raw.tmkup
+        3: punctuation.definition.raw.end.tmkup
+
+  # ----- GOPHER DIRECTIVE -----------------------------------------
+  gopher-directive:
+    - match: '^(@@)(gopher-type)(\s+.*)?$'
+      captures:
+        1: punctuation.definition.directive.begin.tmkup
+        2: keyword.control.gopher.tmkup
+        3: meta.attributes.tmkup
+      push:
+        - meta_scope: meta.directive.gopher.tmkup
+        - match: '^(@@)(endgopher)\s*$'
+          captures:
+            1: punctuation.definition.directive.end.tmkup
+            2: keyword.control.gopher.tmkup
+          pop: true
+        - include: link
+        - include: image
+
+  # ----- INFO BLOCK -----------------------------------------------
+  info-block:
+    - match: '^(!!!)\s*(\{[^}]*\})?\s*$'
+      captures:
+        1: punctuation.definition.block.begin.tmkup
+        2: meta.attributes.tmkup
+      push:
+        - meta_scope: markup.other.info.tmkup
+        - match: '^(!!!)\s*$'
+          captures:
+            1: punctuation.definition.block.end.tmkup
+          pop: true
+        - include: attributes
+        - include: main
+
+  # ----- COLOR BLOCK ----------------------------------------------
+  color-block:
+    - match: '^(%%)\s*(\{[^}]*\})?\s*$'
+      captures:
+        1: punctuation.definition.block.begin.tmkup
+        2: meta.attributes.tmkup
+      push:
+        - meta_scope: markup.other.color.tmkup
+        - match: '^(%%)\s*$'
+          captures:
+            1: punctuation.definition.block.end.tmkup
+          pop: true
+        - include: attributes
+        - include: main
+
+  # ----- SPOILER --------------------------------------------------
+  spoiler:
+    - match: '^(\?\?\?)\s*(\{[^}]*\})?\s*$'
+      captures:
+        1: punctuation.definition.block.begin.tmkup
+        2: meta.attributes.tmkup
+      push:
+        - meta_scope: markup.other.spoiler.tmkup
+        - match: '^(\?\?\?)\s*$'
+          captures:
+            1: punctuation.definition.block.end.tmkup
+          pop: true
+        - include: attributes
+        - include: main
+
+  # ----- FORM -----------------------------------------------------
+  form:
+    - match: '^(@@)\s*(\{[^}]*\})\s*$'
+      captures:
+        1: punctuation.definition.form.begin.tmkup
+        2: meta.attributes.tmkup
+      push:
+        - meta_scope: meta.form.tmkup
+        - match: '^(@@)\s*$'
+          captures:
+            1: punctuation.definition.form.end.tmkup
+          pop: true
+        - include: attributes
+        - include: radio
+        - include: select
+        - include: form-field
+        - include: comments
+
+  # ----- RADIO ----------------------------------------------------
+  radio:
+    - match: '(\[)(radio)(\s+[^\]]*)(\])'
+      captures:
+        1: punctuation.definition.tag.begin.tmkup
+        2: keyword.control.radio.tmkup
+        3: meta.attributes.tmkup
+        4: punctuation.definition.tag.end.tmkup
+      push:
+        - meta_scope: meta.radio.tmkup
+        - match: '(\[)(/radio)(\])'
+          captures:
+            1: punctuation.definition.tag.begin.tmkup
+            2: keyword.control.radio.tmkup
+            3: punctuation.definition.tag.end.tmkup
+          pop: true
+        - include: form-field
+
+  # ----- SELECT ---------------------------------------------------
+  select:
+    - match: '(\[)(select)(\s+[^\]]*)(\])'
+      captures:
+        1: punctuation.definition.tag.begin.tmkup
+        2: keyword.control.select.tmkup
+        3: meta.attributes.tmkup
+        4: punctuation.definition.tag.end.tmkup
+      push:
+        - meta_scope: meta.select.tmkup
+        - match: '(\[)(/select)(\])'
+          captures:
+            1: punctuation.definition.tag.begin.tmkup
+            2: keyword.control.select.tmkup
+            3: punctuation.definition.tag.end.tmkup
+          pop: true
+        - include: form-field
+
+  # ----- FORM FIELD -----------------------------------------------
+  form-field:
+    - match: '(\[)([^\]\n]*)(\])\s*(\{)'
+      captures:
+        1: punctuation.definition.field.begin.tmkup
+        2: entity.name.label.field.tmkup
+        3: punctuation.definition.field.end.tmkup
+        4: punctuation.definition.attributes.begin.tmkup
+      push:
+        - meta_scope: meta.field.form.tmkup
+        - match: '\}'
+          captures:
+            1: punctuation.definition.attributes.end.tmkup
+          pop: true
+        - include: attributes
+
+  # ----- ATTRIBUTES -----------------------------------------------
+  attributes:
+    - match: '([\w-]+)(=)("[^"]*"|''[^'']*'')'
+      captures:
+        1: entity.other.attribute-name.tmkup
+        2: punctuation.separator.key-value.tmkup
+        3: string.quoted.tmkup
+    - match: '(?<![\w-])(required|checked|selected|multiple)(?![\w-])'
+      captures:
+        1: keyword.other.flag.tmkup
+    - match: '([\w-]+)'
+      captures:
+        1: entity.other.attribute-name.tmkup
+
+  # ----- HR -------------------------------------------------------
+  horizontal-rule:
+    - match: '^(?:-{3,}|\*{3,})\s*$'
+      scope: meta.separator.tmkup
+
+  # ----- HEADERS --------------------------------------------------
+  headers:
+    - match: '^(#{1,6})(\s+)(.+?)(\s+#+)?\s*$'
+      scope: markup.heading.tmkup
+      captures:
+        1: punctuation.definition.heading.tmkup
+        3: entity.name.section.tmkup
+        4: punctuation.definition.heading.end.tmkup
+
+  # ----- QUOTE ----------------------------------------------------
+  quote:
+    - match: '^(\s*)(>)\s?(\{[^}]*\})?\s*(.*)$'
+      captures:
+        2: punctuation.definition.quote.tmkup
+        3: meta.attributes.tmkup
+        4: markup.quote.tmkup
+
+  # ----- TABLE ----------------------------------------------------
+  table:
+    - match: '^\s*\|(?:\s*:?-+:?\s*\|)+\s*$'
+      scope: markup.table.separator.tmkup
+    - match: '^\s*(\|)(.*)(\|)\s*$'
+      scope: markup.table.row.tmkup
+      captures:
+        1: punctuation.definition.table.pipe.tmkup
+        2: markup.table.cell.tmkup
+        3: punctuation.definition.table.pipe.tmkup
+
+  # ----- LIST -----------------------------------------------------
+  list:
+    - match: '^(\s*)([-*+])\s+(\[[ x~]\])\s+(.*)$'
+      scope: markup.list.unnumbered.tmkup
+      captures:
+        2: punctuation.definition.list.begin.tmkup
+        3: punctuation.definition.task.tmkup
+        4: markup.list.unnumbered.item.tmkup
+    - match: '^(\s*)([-*+])\s+(.*)$'
+      scope: markup.list.unnumbered.tmkup
+      captures:
+        2: punctuation.definition.list.begin.tmkup
+        3: markup.list.unnumbered.item.tmkup
+    - match: '^(\s*)(\d+\.)\s+(.*)$'
+      scope: markup.list.numbered.tmkup
+      captures:
+        2: punctuation.definition.list.begin.tmkup
+        3: markup.list.numbered.item.tmkup
+    - match: '^(\s*)(:)\s+(.*)$'
+      scope: markup.list.definition.tmkup
+      captures:
+        2: punctuation.definition.list.definition.tmkup
+        3: markup.list.definition.item.tmkup
+
+  # ----- FOOTNOTES ------------------------------------------------
+  footnote-definition:
+    - match: '^\s*(\[\^)([^\]]+)(\])(:)\s*(.*)$'
+      captures:
+        1: punctuation.definition.footnote.begin.tmkup
+        2: entity.name.footnote.tmkup
+        3: punctuation.definition.footnote.end.tmkup
+        4: punctuation.separator.key-value.tmkup
+        5: markup.footnote.body.tmkup
+
+  footnote-ref:
+    - match: '(\[\^)([^\]]+)(\])'
+      captures:
+        1: punctuation.definition.footnote.begin.tmkup
+        2: entity.name.footnote.tmkup
+        3: punctuation.definition.footnote.end.tmkup
+
+  # ----- IMAGE ----------------------------------------------------
+  image:
+    - match: '(!\[)([^\]]*)(\]\()([^)\s]+)(?:\s+(\{[^}]*\}))?(\))'
+      scope: meta.image.tmkup
+      captures:
+        1: punctuation.definition.image.begin.tmkup
+        2: string.other.image.alt.tmkup
+        3: punctuation.definition.image.link.tmkup
+        4: markup.underline.link.image.tmkup
+        5: meta.attributes.tmkup
+        6: punctuation.definition.image.end.tmkup
+
+  # ----- LINK -----------------------------------------------------
+  link:
+    - match: '(\[)([^\]\n]+)(\]\()([^)\s]+)(?:\s+("[^"]*"))?(\))'
+      scope: meta.link.tmkup
+      captures:
+        1: punctuation.definition.link.begin.tmkup
+        2: string.other.link.title.tmkup
+        3: punctuation.definition.link.mid.tmkup
+        4: markup.underline.link.tmkup
+        5: string.other.link.description.tmkup
+        6: punctuation.definition.link.end.tmkup
+
+  # ----- VARIABLES ------------------------------------------------
+  variables:
+    - match: '(\{\{)([^}]*)(\}\})'
+      captures:
+        1: punctuation.definition.variable.begin.tmkup
+        2: variable.other.tmkup
+        3: punctuation.definition.variable.end.tmkup
+
+  # ----- ANSI COLOR -----------------------------------------------
+  ansi-color:
+    - match: '\{(/)\}|\{(/)((?:bg-)?b?(?:red|green|blue|yellow|magenta|cyan|white|black))\}|\{((?:bg-)?b?(?:red|green|blue|yellow|magenta|cyan|white|black))\}'
+      scope: meta.color.tmkup
+      captures:
+        1: punctuation.definition.color.reset.tmkup
+        2: punctuation.definition.color.close.tmkup
+        3: support.constant.color.tmkup
+        4: support.constant.color.tmkup
+
+  # ----- STYLES ---------------------------------------------------
+  styles:
+    - match: '(\*\*\*)([^*\n]+?)(\*\*\*)'
+      scope: markup.bold.italic.tmkup
+    - match: '(\*\*)([^*\n]+?)(\*\*)'
+      scope: markup.bold.tmkup
+    - match: '(\*)([^*\n]+?)(\*)'
+      scope: markup.italic.tmkup
+    - match: '(~~)([^~\n]+?)(~~)'
+      scope: markup.strikethrough.tmkup
+    - match: '(==)([^=\n]+?)(==)'
+      scope: markup.highlight.tmkup
+    - match: '(\^)([^\^\s][^\^\n]*?)(\^)'
+      scope: markup.superscript.tmkup
+    - match: '(~)([^~\n]+?)(~)'
+      scope: markup.subscript.tmkup

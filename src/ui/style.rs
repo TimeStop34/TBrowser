@@ -1,6 +1,6 @@
 use ratatui::style::Color;
 
-use crate::core::settings::{Settings, Value};
+use crate::core::settings::{color_from_index, Settings, Value};
 
 #[derive(Debug, Clone, Copy)]
 pub struct BorderSet {
@@ -330,17 +330,5 @@ fn resolve_color_type(s: &Settings, type_key: &str, custom_key: &str, accent: Co
         1 => accent,
         2 => get_color(s, custom_key, Color::White),
         _ => Color::White,
-    }
-}
-
-fn color_from_index(i: usize) -> Color {
-    match i {
-        0 => Color::Blue,
-        1 => Color::Green,
-        2 => Color::Magenta,
-        3 => Color::Cyan,
-        4 => Color::Yellow,
-        5 => Color::Red,
-        _ => Color::Cyan,
     }
 }

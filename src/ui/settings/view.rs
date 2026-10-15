@@ -13,6 +13,8 @@ use crate::ui::{inner_area as base_inner, render_border};
 use crate::ui::settings::SettingsStyle;
 use crate::ui::GlobalTheme;
 
+const RESET_KEY_PREFIX: &str = "__reset__";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsColumn {
     Categories,
@@ -53,19 +55,35 @@ pub struct EditRequest {
     pub kind: EditKind,
 }
 
+fn reset_param_active(_: &Settings) -> bool {
+    true
+}
+
+static RESET_PARAM: ParamDef = ParamDef {
+    key: "reset",
+    label: "Reset",
+    description: "Reset all settings in this group to their default values.",
+    kind: ParamKind::Bool,
+    active: reset_param_active,
+    default: crate::core::settings::DefaultValue::Bool(false),
+};
+
+#[derive(Clone)]
 struct FlatNode {
-    node: &'static NodeDef,
+    key: String,
+    label: String,
     depth: u8,
     expanded: bool,
     has_group_children: bool,
+    is_reset: bool,
 }
 
 pub struct SettingsView {
     pub settings: Settings,
     pub style: SettingsStyle,
     pub column: SettingsColumn,
-    pub active_key: &'static str,
-    pub expanded: HashSet<&'static str>,
+    pub active_key: String,
+    pub expanded: HashSet<String>,
     pub active_param: usize,
     pub active_variant: usize,
     scroll_categories: u16,
@@ -79,8 +97,8 @@ impl SettingsView {
         let first_key = CATEGORIES
             .iter()
             .find(|n| (n.active)(&settings))
-            .map(|n| n.key)
-            .unwrap_or("");
+            .map(|n| n.key.to_string())
+            .unwrap_or_default();
         Self {
             settings,
             style: SettingsStyle::default(),
@@ -107,16 +125,17 @@ impl SettingsView {
         if !(node.active)(&self.settings) {
             return;
         }
-        let has_group_children = node
-            .children
-            .iter()
-            .any(|c| matches!(c, ItemDef::Group(_)));
+        let has_group_children = node.children.iter().any(|c| matches!(c, ItemDef::Group(_)));
+        let has_params = node.children.iter().any(|c| matches!(c, ItemDef::Param(_)));
+        let expandable = has_group_children || has_params;
         let expanded = self.expanded.contains(node.key);
         out.push(FlatNode {
-            node,
+            key: node.key.to_string(),
+            label: node.label.to_string(),
             depth,
             expanded,
-            has_group_children,
+            has_group_children: expandable,
+            is_reset: false,
         });
         if expanded {
             for child in node.children {
@@ -124,11 +143,36 @@ impl SettingsView {
                     self.collect_flat(g, depth + 1, out);
                 }
             }
+            out.push(FlatNode {
+                key: format!("{}{}", RESET_KEY_PREFIX, node.key),
+                label: "Reset".to_string(),
+                depth: depth + 1,
+                expanded: false,
+                has_group_children: false,
+                is_reset: true,
+            });
         }
     }
 
+    fn current_flat(&self) -> Option<FlatNode> {
+        self.flat_visible_nodes()
+            .into_iter()
+            .find(|n| n.key == self.active_key)
+    }
+
+    #[allow(unused)]
+    fn current_is_reset(&self) -> bool {
+        self.active_key.starts_with(RESET_KEY_PREFIX)
+    }
+
     fn visible_params(&self) -> Vec<(&'static ParamDef, String)> {
-        let Some(node) = self.current_node() else {
+        let Some(item) = self.current_flat() else {
+            return Vec::new();
+        };
+        if item.is_reset {
+            return vec![(&RESET_PARAM, self.active_key.clone())];
+        }
+        let Some(node) = Self::find_node(CATEGORIES, &self.active_key) else {
             return Vec::new();
         };
         node.children
@@ -140,10 +184,6 @@ impl SettingsView {
             .filter(|p| (p.active)(&self.settings))
             .map(|p| (p, full_param_key(node, p)))
             .collect()
-    }
-
-    fn current_node(&self) -> Option<&'static NodeDef> {
-        Self::find_node(CATEGORIES, self.active_key)
     }
 
     fn find_node(list: &'static [NodeDef], key: &str) -> Option<&'static NodeDef> {
@@ -169,13 +209,17 @@ impl SettingsView {
         None
     }
 
+    fn find_label(key: &str) -> Option<&'static str> {
+        Self::find_node(CATEGORIES, key).map(|n| n.label)
+    }
+
     fn ensure_active_valid(&mut self) {
         let flat = self.flat_visible_nodes();
-        if flat.iter().any(|n| n.node.key == self.active_key) {
+        if flat.iter().any(|n| n.key == self.active_key) {
             return;
         }
         if let Some(first) = flat.first() {
-            self.active_key = first.node.key;
+            self.active_key = first.key.clone();
             self.active_param = 0;
             self.active_variant = 0;
         }
@@ -188,10 +232,10 @@ impl SettingsView {
                 let flat = self.flat_visible_nodes();
                 let idx = flat
                     .iter()
-                    .position(|n| n.node.key == self.active_key)
+                    .position(|n| n.key == self.active_key)
                     .unwrap_or(0);
                 if idx > 0 {
-                    self.active_key = flat[idx - 1].node.key;
+                    self.active_key = flat[idx - 1].key.clone();
                     self.active_param = 0;
                     self.active_variant = 0;
                 }
@@ -217,10 +261,10 @@ impl SettingsView {
                 let flat = self.flat_visible_nodes();
                 let idx = flat
                     .iter()
-                    .position(|n| n.node.key == self.active_key)
+                    .position(|n| n.key == self.active_key)
                     .unwrap_or(0);
                 if idx + 1 < flat.len() {
-                    self.active_key = flat[idx + 1].node.key;
+                    self.active_key = flat[idx + 1].key.clone();
                     self.active_param = 0;
                     self.active_variant = 0;
                 }
@@ -255,14 +299,22 @@ impl SettingsView {
     pub fn enter(&mut self) -> Option<EditRequest> {
         match self.column {
             SettingsColumn::Categories => {
-                let Some(node) = self.current_node() else {
+                let Some(item) = self.current_flat() else {
                     return None;
                 };
-                if Self::has_group_children(node) {
-                    if self.expanded.contains(node.key) {
-                        self.expanded.remove(node.key);
+                if item.is_reset {
+                    self.column = SettingsColumn::Params;
+                    self.active_param = 0;
+                    self.active_variant = 0;
+                    self.scroll_params = 0;
+                    return None;
+                }
+                if item.has_group_children {
+                    let k = item.key.clone();
+                    if self.expanded.contains(&k) {
+                        self.expanded.remove(&k);
                     } else {
-                        self.expanded.insert(node.key);
+                        self.expanded.insert(k);
                     }
                     None
                 } else {
@@ -278,70 +330,117 @@ impl SettingsView {
                 let Some((param, full_key)) = params.get(self.active_param) else {
                     return None;
                 };
-                match param.kind {
-                    ParamKind::Bool => {
-                        self.toggle_bool(&full_key);
-                        None
-                    }
-                    ParamKind::Enum(_) | ParamKind::Color(_) => {
-                        self.column = SettingsColumn::Description;
-                        self.active_variant = self.current_variant_index(&full_key);
-                        self.scroll_variants = 0;
-                        None
-                    }
-                    ParamKind::Int => {
-                        let current = match self.settings.get(&full_key) {
-                            Some(Value::Int(i)) => i.to_string(),
-                            _ => "0".to_string(),
-                        };
-                        Some(EditRequest {
-                            key: full_key.clone(),
-                            current,
-                            title: param.label.to_string(),
-                            kind: EditKind::Int,
-                        })
-                    }
-                    ParamKind::Float => {
-                        let current = match self.settings.get(&full_key) {
-                            Some(Value::Float(f)) => format!("{}", f),
-                            _ => "0.0".to_string(),
-                        };
-                        Some(EditRequest {
-                            key: full_key.clone(),
-                            current,
-                            title: param.label.to_string(),
-                            kind: EditKind::Float,
-                        })
-                    }
-                    ParamKind::String => {
-                        let current = match self.settings.get(&full_key) {
-                            Some(Value::Str(s)) => s.clone(),
-                            _ => String::new(),
-                        };
-                        Some(EditRequest {
-                            key: full_key.clone(),
-                            current,
-                            title: param.label.to_string(),
-                            kind: EditKind::String,
-                        })
-                    }
-                    ParamKind::Keybind => {
-                        let current = match self.settings.get(&full_key) {
-                            Some(Value::Str(s)) => s.clone(),
-                            _ => String::new(),
-                        };
-                        Some(EditRequest {
-                            key: full_key.clone(),
-                            current,
-                            title: param.label.to_string(),
-                            kind: EditKind::Keybind,
-                        })
-                    }
-                }
-            }
-            SettingsColumn::Description => {
-                self.commit_variant();
+
+                self.column = SettingsColumn::Description;
+                self.active_variant = self.initial_variant_index(param, full_key);
+                self.scroll_variants = 0;
                 None
+            }
+            SettingsColumn::Description => self.activate_description_item(),
+        }
+    }
+
+    fn initial_variant_index(&self, param: &'static ParamDef, full_key: &str) -> usize {
+        if full_key.starts_with(RESET_KEY_PREFIX) {
+            return 1; // Off
+        }
+        match param.kind {
+            ParamKind::Bool => match self.settings.get(full_key) {
+                Some(Value::Bool(true)) => 0,
+                Some(Value::Bool(false)) => 1,
+                _ => 0,
+            },
+            ParamKind::Enum(_) | ParamKind::Color(_) => match self.settings.get(full_key) {
+                Some(Value::EnumIndex(i)) => *i,
+                _ => 0,
+            },
+            _ => 0,
+        }
+    }
+
+    fn activate_description_item(&mut self) -> Option<EditRequest> {
+        let params = self.visible_params();
+        let Some((param, full_key)) = params.get(self.active_param) else {
+            return None;
+        };
+
+        if let Some(parent_key) = full_key.strip_prefix(RESET_KEY_PREFIX) {
+            if self.active_variant == 0 {
+                self.reset_group(parent_key);
+            }
+            self.column = SettingsColumn::Params;
+            return None;
+        }
+
+        match param.kind {
+            ParamKind::Bool => {
+                match self.active_variant {
+                    0 => {
+                        if let Some(v) = self.settings.get_mut(full_key) {
+                            *v = Value::Bool(true);
+                        }
+                    }
+                    1 => {
+                        if let Some(v) = self.settings.get_mut(full_key) {
+                            *v = Value::Bool(false);
+                        }
+                    }
+                    2 => {
+                        if let Some(v) = self.settings.get_mut(full_key) {
+                            *v = param.default.to_value();
+                        }
+                    }
+                    _ => {}
+                }
+                let _ = self.settings.save();
+                self.column = SettingsColumn::Params;
+                None
+            }
+            ParamKind::Enum(opts) | ParamKind::Color(opts) => {
+                if self.active_variant == opts.len() {
+                    if let Some(v) = self.settings.get_mut(full_key) {
+                        *v = param.default.to_value();
+                    }
+                } else if let Some(v) = self.settings.get_mut(full_key) {
+                    *v = Value::EnumIndex(self.active_variant);
+                }
+                let _ = self.settings.save();
+                self.column = SettingsColumn::Params;
+                None
+            }
+            ParamKind::Int | ParamKind::Float | ParamKind::String | ParamKind::Keybind => {
+                match self.active_variant {
+                    0 => {
+                        let kind = match param.kind {
+                            ParamKind::Int => EditKind::Int,
+                            ParamKind::Float => EditKind::Float,
+                            ParamKind::String => EditKind::String,
+                            ParamKind::Keybind => EditKind::Keybind,
+                            _ => return None,
+                        };
+                        let current = match self.settings.get(full_key) {
+                            Some(Value::Int(i)) => i.to_string(),
+                            Some(Value::Float(f)) => format!("{}", f),
+                            Some(Value::Str(s)) => s.clone(),
+                            _ => String::new(),
+                        };
+                        Some(EditRequest {
+                            key: full_key.clone(),
+                            current,
+                            title: param.label.to_string(),
+                            kind,
+                        })
+                    }
+                    1 => {
+                        if let Some(v) = self.settings.get_mut(full_key) {
+                            *v = param.default.to_value();
+                        }
+                        let _ = self.settings.save();
+                        self.column = SettingsColumn::Params;
+                        None
+                    }
+                    _ => None,
+                }
             }
         }
     }
@@ -379,10 +478,30 @@ impl SettingsView {
         let _ = self.settings.save();
     }
 
-    fn has_group_children(node: &NodeDef) -> bool {
-        node.children
-            .iter()
-            .any(|c| matches!(c, ItemDef::Group(_)))
+    fn reset_group(&mut self, group_key: &str) {
+        let Some(node) = Self::find_node(CATEGORIES, group_key) else {
+            return;
+        };
+        Self::reset_node(&mut self.settings, node);
+        let _ = self.settings.save();
+    }
+
+    fn reset_node(settings: &mut Settings, node: &'static NodeDef) {
+        for child in node.children {
+            match child {
+                ItemDef::Param(p) => {
+                    let full = if node.key.is_empty() {
+                        p.key.to_string()
+                    } else {
+                        format!("{}.{}", node.key, p.key)
+                    };
+                    if let Some(v) = settings.get_mut(&full) {
+                        *v = p.default.to_value();
+                    }
+                }
+                ItemDef::Group(g) => Self::reset_node(settings, g),
+            }
+        }
     }
 
     fn clamp_variant(&mut self) {
@@ -397,39 +516,22 @@ impl SettingsView {
 
     fn variants_count(&self) -> Option<usize> {
         let params = self.visible_params();
-        let (param, _) = params.get(self.active_param)?;
+        let (param, full_key) = params.get(self.active_param)?;
+        if full_key.starts_with(RESET_KEY_PREFIX) {
+            return Some(2); // On / Off
+        }
         match param.kind {
-            ParamKind::Enum(opts) | ParamKind::Color(opts) => Some(opts.len()),
+            ParamKind::Bool => Some(3),
+            ParamKind::Enum(opts) | ParamKind::Color(opts) => Some(opts.len() + 1),
+            ParamKind::Int | ParamKind::Float | ParamKind::String | ParamKind::Keybind => Some(2),
+        }
+    }
+
+    fn current_variant_index(&self, full_key: &str) -> Option<usize> {
+        match self.settings.get(full_key) {
+            Some(Value::EnumIndex(i)) => Some(*i),
             _ => None,
         }
-    }
-
-    fn current_variant_index(&self, full_key: &str) -> usize {
-        match self.settings.get(full_key) {
-            Some(Value::EnumIndex(i)) => *i,
-            _ => 0,
-        }
-    }
-
-    fn toggle_bool(&mut self, full_key: &str) {
-        if let Some(Value::Bool(b)) = self.settings.get_mut(full_key) {
-            *b = !*b;
-        }
-        let _ = self.settings.save();
-    }
-
-    fn commit_variant(&mut self) {
-        let params = self.visible_params();
-        let Some((param, full_key)) = params.get(self.active_param) else {
-            return;
-        };
-        if matches!(param.kind, ParamKind::Enum(_) | ParamKind::Color(_)) {
-            if let Some(v) = self.settings.get_mut(full_key) {
-                *v = Value::EnumIndex(self.active_variant);
-            }
-        }
-        let _ = self.settings.save();
-        self.column = SettingsColumn::Params;
     }
 
     pub fn render(
@@ -463,7 +565,7 @@ impl SettingsView {
         let flat = self.flat_visible_nodes();
         let idx = flat
             .iter()
-            .position(|n| n.node.key == self.active_key)
+            .position(|n| n.key == self.active_key)
             .unwrap_or(0);
         self.scroll_categories = clamp_scroll(
             self.scroll_categories,
@@ -515,7 +617,7 @@ impl SettingsView {
 
         for (i, item) in flat[start..end].iter().enumerate() {
             let row = inner.y + i as u16;
-            let is_active = item.node.key == self.active_key;
+            let is_active = item.key == self.active_key;
 
             let style = if is_active {
                 Style::default()
@@ -535,7 +637,14 @@ impl SettingsView {
                 "  "
             };
             let indent = "  ".repeat(item.depth as usize);
-            let label = format!("{}{}{}", indent, marker, item.node.label);
+
+            let item_label = if item.is_reset {
+                theme.button.format.replace("{}", "Reset")
+            } else {
+                item.label.clone()
+            };
+
+            let label = format!("{}{}{}", indent, marker, item_label);
 
             let max = inner.width as usize;
             let display: String = label.chars().take(max).collect();
@@ -584,8 +693,14 @@ impl SettingsView {
                 Style::default().fg(self.style.item_fg)
             };
 
-            let value_str = self.format_value(full_key, param.kind);
-            let line = format!(" {}: {}", param.label, value_str);
+            let line = if let Some(parent_key) = full_key.strip_prefix(RESET_KEY_PREFIX) {
+                let parent_label = Self::find_label(parent_key).unwrap_or("");
+                format!(" Reset settings of the {} group", parent_label)
+            } else {
+                let value_str = self.format_value(full_key, param.kind);
+                format!(" {}: {}", param.label, value_str)
+            };
+
             let max = inner.width as usize;
             let display: String = line.chars().take(max).collect();
 
@@ -640,38 +755,74 @@ impl SettingsView {
             y += 1;
         }
 
-        if matches!(param.kind, ParamKind::Enum(_) | ParamKind::Color(_))
-            && y + 1 < inner.y + inner.height
-        {
-            y += 1;
-            let opts = match param.kind {
-                ParamKind::Enum(o) | ParamKind::Color(o) => o,
-                _ => &[],
-            };
-            let current = self.current_variant_index(full_key);
+        if y + 1 >= inner.y + inner.height {
+            return;
+        }
+        y += 1;
 
-            let start = self.scroll_variants as usize;
-            let viewport = (inner.y + inner.height).saturating_sub(y) as usize;
-            let end = (start + viewport).min(opts.len());
+        let is_reset = full_key.starts_with(RESET_KEY_PREFIX);
 
-            for (i, opt) in opts[start..end].iter().enumerate() {
-                let row = y + i as u16;
-                if row >= inner.y + inner.height {
-                    break;
+        let items: Vec<(String, bool)> = if is_reset {
+            vec![
+                ("On".to_string(), false),
+                ("Off".to_string(), true),
+            ]
+        } else {
+            match param.kind {
+                ParamKind::Bool => {
+                    let cur = self.settings.get(full_key);
+                    vec![
+                        ("On".to_string(), matches!(cur, Some(Value::Bool(true)))),
+                        ("Off".to_string(), matches!(cur, Some(Value::Bool(false)))),
+                        ("< Reset >".to_string(), false),
+                    ]
                 }
-                let real_idx = start + i;
-                let is_active = focused && real_idx == self.active_variant;
-                let is_current = real_idx == current;
-                let mut style = Style::default().fg(self.style.item_fg);
-                if is_active {
-                    style = Style::default()
-                        .fg(theme.selection.fg)
-                        .bg(theme.selection.bg);
+                ParamKind::Enum(opts) | ParamKind::Color(opts) => {
+                    let cur = self.current_variant_index(full_key);
+                    let mut v: Vec<(String, bool)> = opts
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| (s.to_string(), Some(i) == cur))
+                        .collect();
+                    v.push(("< Reset >".to_string(), false));
+                    v
                 }
-                let marker = if is_current { "*" } else { " " };
-                let line = format!(" {} {}", marker, opt);
-                buf.set_string(inner.x, row, &line, style);
+                ParamKind::Int | ParamKind::Float | ParamKind::String | ParamKind::Keybind => {
+                    vec![
+                        ("< Edit >".to_string(), false),
+                        ("< Reset >".to_string(), false),
+                    ]
+                }
             }
+        };
+
+        let total = items.len();
+        let start = self.scroll_variants as usize;
+        let viewport = (inner.y + inner.height).saturating_sub(y) as usize;
+        let end = (start + viewport).min(total);
+
+        for real_idx in start..end {
+            let row = y + (real_idx - start) as u16;
+            if row >= inner.y + inner.height {
+                break;
+            }
+            let is_active = focused && real_idx == self.active_variant;
+
+            let mut style = Style::default().fg(self.style.item_fg);
+            if is_active {
+                style = Style::default()
+                    .fg(theme.selection.fg)
+                    .bg(theme.selection.bg);
+            }
+
+            let (text, is_current) = &items[real_idx];
+            let line = if text.starts_with('<') {
+                format!("   {}", text)
+            } else {
+                let marker = if *is_current { "*" } else { " " };
+                format!(" {} {}", marker, text)
+            };
+            buf.set_string(inner.x, row, &line, style);
         }
     }
 
@@ -695,9 +846,6 @@ impl SettingsView {
         let Some((param, _)) = params.get(self.active_param) else {
             return inner.height;
         };
-        if !matches!(param.kind, ParamKind::Enum(_) | ParamKind::Color(_)) {
-            return 0;
-        }
         let desc_lines =
             wrap_text(param.description, inner.width.saturating_sub(1) as usize).len() as u16;
         inner.height.saturating_sub(desc_lines).saturating_sub(1)

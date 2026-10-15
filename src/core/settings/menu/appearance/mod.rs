@@ -1,3 +1,4 @@
+use crate::core::settings::colors::COLOR_NAMES;
 use crate::core::settings::DefaultValue;
 use crate::core::{ParamDef, ParamKind};
 use crate::core::settings::def::{always_active, ItemDef, NodeDef};
@@ -12,31 +13,22 @@ use self::layout::NODE_LAYOUT;
 use self::background_colors::NODE_BGCOLORS;
 use self::foreground_colors::NODE_FGCOLORS;
 
-pub const COLORS: &[&'static str] = &[
-    "Blue",
-    "Green",
-    "Magenta",
-    "Cyan",
-    "Yellow",
-    "Red",
-];
-
 pub static P_ACCENT: ParamDef = ParamDef {
     key: "accent",
     label: "Accent color",
     description: "Accent color of the interface.",
-    kind: ParamKind::Color(COLORS),
+    kind: ParamKind::Color(COLOR_NAMES),
     active: always_active,
-    default: DefaultValue::EnumIndex(0)
+    default: DefaultValue::EnumIndex(6), // Cyan
 };
 
 static P_SELECTED_TAB_COLOR: ParamDef = ParamDef {
     key: "selected_tab_color",
     label: "Selected tab color",
     description: "The color of the selected tab in the tab menu.",
-    kind: ParamKind::Color(COLORS),
+    kind: ParamKind::Color(COLOR_NAMES),
     active: always_active,
-    default: DefaultValue::EnumIndex(0)
+    default: DefaultValue::EnumIndex(2), // Green
 };
 
 const APPEARANCE_CHILDREN: &[ItemDef] = &[
