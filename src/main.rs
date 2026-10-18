@@ -28,7 +28,7 @@ use core::{
     InteractiveFieldKind, LineKind, NodeData, Tab, TabManager,
 };
 use guard::TuiGuard;
-use network::base::FetchOptions;
+use network::base::{FetchOptions, ProgressCallback};
 use network::factory::{get_post_protocol, get_protocol};
 use ui::{
     ButtonCallback, ConfirmDialog, EditKind, GlobalTheme, Header, InputDialog, KeybindDialog,
@@ -80,6 +80,9 @@ enum Action {
         node_id: NodeId,
         result: Result<Vec<Line<'static>>, String>,
         generation: u64,
+    },
+    ShowHint {
+        text: String,
     },
 }
 
@@ -215,6 +218,107 @@ fn resolve_image_url(base_url: &str, src: &str) -> String {
         }
     }
     src.to_string()
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < units.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    if unit_idx == 0 {
+        format!("{} {}", bytes, units[unit_idx])
+    } else {
+        format!("{:.1} {}", size, units[unit_idx])
+    }
+}
+
+async fn headless_download(url: &str) -> Result<(), String> {
+    let filename = Url::parse(url)
+        .ok()
+        .and_then(|u| u.path_segments().and_then(|s| s.last()).map(|s| s.to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "download".to_string());
+
+    let client = match get_protocol("tbip") {
+        Some(c) => c,
+        None => return Err("tbip protocol not found".to_string()),
+    };
+
+    let options = FetchOptions {
+        follow_redirects: true,
+        max_redirects: 10,
+    };
+
+    let fname_clone = filename.clone();
+    let header_printed = std::sync::atomic::AtomicBool::new(false);
+    let progress: ProgressCallback = Box::new(move |read, total| {
+        let mut stdout = std::io::stdout();
+        if !header_printed.load(std::sync::atomic::Ordering::Relaxed) {
+            let size_str = if total > 0 {
+                format!("~{}", format_size(total))
+            } else {
+                "unknown size".to_string()
+            };
+            print!("\nDownloading {}: {}\n\n", fname_clone, size_str);
+            header_printed.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        let width = 32;
+        let filled = if total > 0 { ((read * width as u64) / total) as usize } else { 0 };
+        let filled = filled.min(width);
+        let mut bar = String::new();
+        for i in 0..width {
+            if i < filled {
+                bar.push('=');
+            } else {
+                bar.push(' ');
+            }
+        }
+        if filled > 0 {
+            let mut chars: Vec<char> = bar.chars().collect();
+            chars[filled - 1] = '>';
+            bar = chars.into_iter().collect();
+        }
+        let percent = if total > 0 { (read * 100) / total } else { 0 };
+        print!("\r[{}] {}% {}", bar, percent, fname_clone);
+        let _ = stdout.flush();
+    });
+
+    print!("\r");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        client.fetch(url, Some(&progress), &options),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(resp)) => {
+            if resp.ok() {
+                match std::fs::write(&filename, &resp.body) {
+                    Ok(_) => {
+                        print!("\n\nSaved as {}   \n", filename);
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        Ok(())
+                    }
+                    Err(e) => Err(format!("Save failed: {}", e)),
+                }
+            } else {
+                Err(format!("Download failed: {}", resp.status_name))
+            }
+        }
+        Ok(Err(e)) => Err(format!("Download failed: {}", e)),
+        Err(_) => Err("Download timed out".to_string()),
+    }
 }
 
 async fn load_image_ascii(
@@ -523,6 +627,18 @@ fn inline_cursor_xy(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli_url: Option<String> = std::env::args().nth(1).filter(|a| !a.is_empty());
+
+    if let Some(url) = &cli_url {
+        if url.starts_with("tbip://") {
+            if let Err(e) = headless_download(url).await {
+                eprintln!("\nError: {}", e);
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+    }
+
     let (_guard, mut terminal) = TuiGuard::new();
     let size = terminal.size()?;
     let mut viewport_width: u16 = size.width;
@@ -596,19 +712,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pending_field: Option<(NodeId, usize)> = None;
     let mut inline_edit: Option<InlineEdit> = None;
 
-    if !config.homepage.is_empty() {
+    let startup_url = cli_url.unwrap_or_else(|| config.homepage.clone());
+    if !startup_url.is_empty() {
         if let Some(tab) = tabs.active_mut() {
-            tab.url = config.homepage.clone();
+            tab.url = startup_url.clone();
         }
     }
 
     let tab_index = tabs.active;
-    let initial_url = tabs.active().map(|t| t.url.clone()).unwrap_or_default();
-    if !initial_url.is_empty() {
+    if !startup_url.is_empty() {
         let _ = action_tx
             .send(Action::LoadUrl {
                 tab_index,
-                url: initial_url,
+                url: startup_url,
                 mode: NavigateMode::Push,
             })
             .await;
@@ -1609,7 +1725,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .and_then(|m| m.links.first().map(|l| l.url.clone()))
                                 });
                                 if let Some(url) = url_opt {
-                                    if (tabs.len() as u32) < config.max_tabs {
+                                    if url.starts_with("tbip://") {
+                                        let _ = action_tx
+                                            .send(Action::LoadUrl {
+                                                tab_index,
+                                                url,
+                                                mode: NavigateMode::Push,
+                                            })
+                                            .await;
+                                    } else if (tabs.len() as u32) < config.max_tabs {
                                         let idx = tabs.add("New Tab", url.clone());
                                         if sidebar_open && sidebar.mode == SidebarMode::Tabs {
                                             sidebar.cursor = idx;
@@ -2299,6 +2423,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Action::HideHint { token } => {
                         keybind_hint.hide(token);
                     }
+                    Action::ShowHint { text } => {
+                        spawn_hint(&mut keybind_hint, &text, global_theme.keybind_hint_duration_ms, action_tx.clone());
+                    }
                     Action::LoadStage { url, stage, .. } => {
                         if url == url_bar.loading_url {
                             url_bar.set_stage(stage);
@@ -2318,6 +2445,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Action::LoadUrl { tab_index, url, mode } => {
                         inline_edit = None;
+
+                        if url.starts_with("tbip://") {
+                            let filename = Url::parse(&url)
+                                .ok()
+                                .and_then(|u| u.path_segments().and_then(|s| s.last()).map(|s| s.to_string()))
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or_else(|| "download".to_string());
+
+                            let tx = action_tx.clone();
+                            let url_c = url.clone();
+                            let timeout = config.timeout;
+
+                            tokio::spawn(async move {
+                                let client = match get_protocol("tbip") {
+                                    Some(c) => c,
+                                    None => {
+                                        let _ = tx.send(Action::ShowHint { text: "tbip protocol not found".to_string() }).await;
+                                        return;
+                                    }
+                                };
+                                let options = FetchOptions {
+                                    follow_redirects: true,
+                                    max_redirects: 10,
+                                };
+                                let result = tokio::time::timeout(
+                                    Duration::from_secs(timeout.max(1)),
+                                    client.fetch(&url_c, None, &options),
+                                ).await;
+
+                                match result {
+                                    Ok(Ok(resp)) => {
+                                        if resp.ok() {
+                                            match std::fs::write(&filename, &resp.body) {
+                                                Ok(_) => {
+                                                    let _ = tx.send(Action::ShowHint { text: format!("Saved to {}", filename) }).await;
+                                                }
+                                                Err(e) => {
+                                                    let _ = tx.send(Action::ShowHint { text: format!("Save failed: {}", e) }).await;
+                                                }
+                                            }
+                                        } else {
+                                            let _ = tx.send(Action::ShowHint { text: format!("Download failed: {}", resp.status_name) }).await;
+                                        }
+                                    }
+                                    Ok(Err(e)) => {
+                                        let _ = tx.send(Action::ShowHint { text: format!("Download failed: {}", e) }).await;
+                                    }
+                                    Err(_) => {
+                                        let _ = tx.send(Action::ShowHint { text: "Download timed out".to_string() }).await;
+                                    }
+                                }
+                            });
+                            continue;
+                        }
+
                         let generation = match tabs.get_mut(tab_index) {
                             Some(tab) => {
                                 tab.load_generation = tab.load_generation.wrapping_add(1);
